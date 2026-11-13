@@ -189,7 +189,7 @@ debugger are not implemented yet.
 
 Feedback and bug reports are welcome through GitHub issues or by contacting the
 maintainer. The main contributor is
-[Gautham_rgb](https://github.com/Gautham-rgb/).
+[Gautham_rgb](https://github.com/systemic-speed/).
 
 ## Notes on AI
 
