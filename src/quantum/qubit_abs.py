@@ -63,7 +63,7 @@ class Qubit:
         self._assert_alive()
         self.computer.apply_gate(gate_matrix, target_qubits=[self])
 
-    def probability_of_one(self) -> float:
+    def alpha(self) -> float:
         """Chance this qubit reads 1 if we measured the whole computer now."""
         amplitudes = self.computer.state_vector[:, 0]
         bit = self.computer.bit_position(self.index)
@@ -72,7 +72,7 @@ class Qubit:
     def measure(self) -> int:
         """Measure this qubit, collapsing the state onto the outcome."""
         self._assert_alive()
-        probability = np.clip(self.probability_of_one(), 0.0, 1.0)
+        probability = np.clip(self.alpha(), 0.0, 1.0)
 
         self.is_measured = True
         self._true_val = int(rnd.choice([0, 1], p=[1 - probability, probability]))

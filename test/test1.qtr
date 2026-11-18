@@ -1,6 +1,7 @@
 import quantum
 from quantum import QuantumComputer
 
+
 q = QuantumComputer(4)
 
 # ordinary Python still works
@@ -14,3 +15,6 @@ q[2] <-i-> q[3]
 
 print(q.state_vector)
 
+
+def foo():
+    print("hello")

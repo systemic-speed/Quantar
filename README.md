@@ -1,5 +1,7 @@
 # Quantar
 
+![Quantar Demo]()
+
 Quantar is a strict superset of Python for quantum computing and physics
 simulations. It keeps Python syntax and adds custom infix operators such as
 `a <-> b`, plus a library of quantum gates, circuits, algorithms, and physics
