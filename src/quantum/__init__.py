@@ -5,9 +5,13 @@ Public API::
     from quantum import QuantumComputer, Qubit, Gate, CircuitGate
     from quantum import h_MAT, px_MAT, crk, to_openqasm3
 
+``QuantumComputer``, ``Qubit`` and ``Gate`` come from the active backend, which
+is selected with ``use_backend("python")`` or ``use_backend("rust")``.
+
 Internals are grouped by concern (eight files, not a pile of fragments):
 
-    qubit_abs     QuantumComputer and Qubit -- the simulator itself
+    backend       backend selection, validation and local cargo auto-build
+    qubit_abs     Python QuantumComputer and Qubit -- the simulator itself
     gate_abs      Gate, CompositeGate, CircuitGate -- how operations are recorded
     gate_matrix   gate matrices and their OpenQASM 3 names
     kernels       numba kernels + numpy fallbacks (the hot loops)
@@ -20,8 +24,21 @@ QFT/IQFT circuit builders (`qft_program`, `qft_gate`, ...) live in
 `stl.quantum_algs.shors_alg`, next to the algorithm that uses them.
 """
 
-from quantum.qubit_abs import QuantumComputer, Qubit
-from quantum.gate_abs import Gate, CompositeGate, CircuitGate
+from quantum import backend
+from quantum.backend import (
+    available_backends,
+    build_rust_backend,
+    find_cargo,
+    find_rust_source_dir,
+    get_backend,
+    get_backend_module,
+    load_rust_backend,
+    reset_backend,
+    rust_build_available,
+    set_backend,
+    use_backend,
+)
+from quantum.gate_abs import CompositeGate, CircuitGate
 from quantum import gate_matrix
 from quantum import kernels
 from quantum.gate_matrix import (
@@ -39,12 +56,38 @@ from quantum.kernels import (
 from quantum.composites import crk
 from quantum.qasm import to_openqasm3
 
+_BACKEND_EXPORTS = frozenset({"QuantumComputer", "Qubit", "Gate"})
+
+
+def __getattr__(name):
+    """Resolve backend-dependent classes on every access so switches take effect."""
+    if name in _BACKEND_EXPORTS:
+        return backend.backend_export(name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(_BACKEND_EXPORTS) | set(__all__))
+
+
 __all__ = [
     "QuantumComputer",
     "Qubit",
     "Gate",
     "CompositeGate",
     "CircuitGate",
+    "backend",
+    "available_backends",
+    "build_rust_backend",
+    "find_cargo",
+    "find_rust_source_dir",
+    "get_backend",
+    "get_backend_module",
+    "load_rust_backend",
+    "reset_backend",
+    "rust_build_available",
+    "set_backend",
+    "use_backend",
     "gate_matrix",
     "kernels",
     "h_MAT", "px_MAT", "py_MAT", "pz_MAT", "i_MAT",

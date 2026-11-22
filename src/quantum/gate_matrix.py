@@ -114,9 +114,9 @@ def cp_MAT(angle: float) -> np.ndarray:
                      [0, 0, 0, phased[1, 1]]], dtype=complex)
 
 def rk_MAT(k: int) -> np.ndarray:
-    e_exp = (np.pi * 1j) / (1 << k - 1)
+    e_exp = (np.pi * 1j) / (1 << (k - 1))
     return np.array([[1, 0],
-                     [0, np.e ** e_exp]])
+                     [0, np.e ** e_exp]], dtype=complex)
 
 def qft_MAT(num_qubits: int) -> np.ndarray:
     N = 1 << num_qubits
@@ -148,6 +148,17 @@ _BUILTIN_GATE_NAMES = [
     ("tdg", tdg_MAT),
     ("id", i_MAT),
     ("swap", swap_MAT),
+]
+
+
+# Parameterised gates OpenQASM 3 spells by name. Kept separate from the table
+# above because these factories take angle arguments and cannot be compared
+# against a recorded matrix by `named_gate`.
+_BUILTIN_ARG_GATE_NAMES = [
+    ("p", p_MAT),
+    ("rx", rx_MAT),
+    ("ry", ry_MAT),
+    ("rz", rz_MAT),
 ]
 
 

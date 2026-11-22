@@ -10,6 +10,7 @@ helpers.
 ## Requirements
 
 - Python 3.12 or newer
+- Rust (to install it, click [here](https://rust-lang.org/tools/install/) and follow the commands)
 - NumPy, Numba, and `openqasm3[parser]` (installed automatically)
 
 ## Installation
@@ -150,6 +151,95 @@ import quantum
 from stl.quantum_algs.shors_alg import shors_alg
 from stl.physics_algs.units import Quantity, Unit
 ```
+
+### Selecting a simulator backend
+
+`QuantumComputer`, `Qubit`, and `Gate` follow the active backend. The default is
+the pure-Python simulator; switch to the compiled Rust backend at runtime when
+the extension is available:
+
+```python
+import quantum
+
+print(quantum.get_backend())        # "python"
+quantum.use_backend("rust")         # or "python" to switch back
+qc = quantum.QuantumComputer(2)     # quantum.quantar_kernels.QuantumComputer
+
+quantum.load_rust_backend()         # import/validate the extension directly
+quantum.available_backends()        # e.g. ("python", "rust")
+```
+
+The backend can also be chosen before startup with `QUANTAR_BACKEND=rust`. The
+bundled extension is built with PyO3's `abi3-py312` feature, so the same binary
+works on CPython 3.12+ and wheels are tagged `cp312-abi3-*`. In the source tree
+it is named `src/quantum/quantar_kernels.pyd`, with a copy kept in the root
+`kernels/` directory.
+
+If that extension is missing or stale, Quantar automatically builds it locally
+when `cargo` and the `rust/` source tree are available:
+
+```python
+import quantum
+
+quantum.rust_build_available()   # True when cargo + rust/Cargo.toml are found
+quantum.build_rust_backend()     # force a fresh release build and load it
+quantum.use_backend("rust")      # auto-builds if needed
+```
+
+Environment overrides:
+
+- `QUANTAR_RUST_AUTO_BUILD=0` disables automatic builds.
+- `QUANTAR_RUST_SOURCE_DIR` points at the repo root or its `rust/` directory.
+- `QUANTAR_CARGO` selects a specific cargo executable.
+- `QUANTAR_RUST_BACKEND_PATH` loads a specific `.pyd`/`.so` instead.
+- `QUANTAR_RUST_BUILD_CACHE` changes the fallback output directory when the
+  installed package directory is not writable.
+
+### Building the Rust backend manually
+
+```powershell
+$env:PYO3_PYTHON = "C:\path\to\your\python.exe"
+cargo build --release --manifest-path rust/Cargo.toml
+
+Copy-Item rust\target\release\quantar_kernels.dll `
+  src\quantum\quantar_kernels.pyd -Force
+Copy-Item rust\target\release\quantar_kernels.dll `
+  kernels\quantar_kernels.pyd -Force
+```
+
+For distribution, prefer wheels over copying `.pyd` files by hand. The wheel is
+tagged `cp312-abi3-*`.
+
+### Imports in Quantar programs
+
+Regular Python imports work inside `.qtr` files, and Quantar can import other
+`.qtr` modules too:
+
+```python
+# gates.qtr
+from lang_systems.operators import operator
+
+@operator.binary("<~>")
+def reverse(left, right):
+    return right, left
+
+VALUE = 42
+```
+
+```python
+# main.qtr
+from gates import VALUE
+import gates
+
+a, b = 1, 2
+print(a <~> b)   # operator is registered before parsing
+print(VALUE)
+```
+
+Run it with `qtr main.qtr`. Directory packages with `__init__.qtr` support
+relative imports such as `from .gates import VALUE`. The runner adds the source
+file's directory to `sys.path`, so sibling `.py` and `.qtr` modules are found
+without extra setup. Compiled `.py` output installs the same import hook.
 
 See the modules under `src/quantum/` and `src/stl/` for the available gates,
 circuits, algorithms, and physics helpers.

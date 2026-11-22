@@ -7205,12 +7205,12 @@ class GeneratedParser(Parser):
         # quantum_operator: QUANTUM_OP | QUANTUM_NAME
         mark = self._mark()
         if (
-            (QUANTUM_OP := self.QUANTUM_OP()) #type: ignore
+            (QUANTUM_OP := self.QUANTUM_OP())
         ):
             return QUANTUM_OP;
         self._reset(mark)
         if (
-            (QUANTUM_NAME := self.QUANTUM_NAME()) #type: ignore
+            (QUANTUM_NAME := self.QUANTUM_NAME())
         ):
             return QUANTUM_NAME;
         self._reset(mark)

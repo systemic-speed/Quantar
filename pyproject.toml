@@ -32,8 +32,6 @@ path = "src/lang_systems/__init__.py"
 [tool.hatch.build.hooks.custom]
 path = "hatch_build.py"
 
-[tool.hatch.build.hooks.maturin]
-
 [tool.hatch.build.targets.wheel]
 packages = ["src/quantar", "src/quantum", "src/stl", "src/lang_systems"]
 
@@ -55,8 +53,11 @@ include = [
 [tool.maturin]
 manifest-path = "rust/Cargo.toml"
 python-source = "src"
-module-name = "quantum._kernels"
+module-name = "quantum.quantar_kernels"
 
 [project.scripts]
 qtr = "lang_systems.runner:main"
 quantar-lsp = "lang_systems.lsp.server:main"
+
+[tool.hatch.build.targets.wheel.hooks.maturin]
+manifest-path = "rust/Cargo.toml"

@@ -1,12 +1,69 @@
 from . import ast_builder
+from .imports import install_import_hook, preload_imports
 from .runtime import runtime_globals
 from pathlib import Path
 import argparse
+import ast
 from ast import unparse
 import sys
 
 INTERNAL_RUNNER_FILE = Path(__file__).resolve()
 INTERNAL_PACKAGE_DIR = INTERNAL_RUNNER_FILE.parent.parent.resolve()
+
+
+def _package_for(path: Path) -> str:
+    """Best-effort ``__package__`` for a file run as the main module."""
+    directory = path.parent.resolve()
+    is_package = (
+        path.name == "__init__.qtr"
+        or (directory / "__init__.qtr").is_file()
+        or (directory / "__init__.py").is_file()
+    )
+    if not is_package:
+        return ""
+    for entry in (*sys.path, str(INTERNAL_PACKAGE_DIR)):
+        if not entry:
+            continue
+        try:
+            parts = directory.relative_to(Path(entry).resolve()).parts
+        except ValueError:
+            continue
+        return ".".join(parts)
+    return ""
+
+
+def _add_source_dir(path: Path) -> None:
+    """Match Python's script behaviour by putting the source directory on sys.path."""
+    directory = str(path.parent.resolve())
+    if directory not in sys.path:
+        sys.path.insert(0, directory)
+
+
+def _inject_runtime_imports(tree: ast.AST) -> ast.Module:
+    """Add runtime helpers after any docstring and ``__future__`` imports."""
+    lowered = ast_builder.lower_ast(tree)
+    assert isinstance(lowered, ast.Module)
+
+    index = 0
+    if (
+        lowered.body
+        and isinstance(lowered.body[0], ast.Expr)
+        and isinstance(lowered.body[0].value, ast.Constant)
+        and isinstance(lowered.body[0].value.value, str)
+    ):
+        index = 1
+    for position, statement in enumerate(lowered.body):
+        if isinstance(statement, ast.ImportFrom) and statement.module == "__future__":
+            index = max(index, position + 1)
+
+    helpers = ast.parse(
+        "from lang_systems.runtime import apply_quantar_operator as __quantar_apply__\n"
+        "from lang_systems.imports import install_import_hook as __quantar_install_import_hook__\n"
+        "__quantar_install_import_hook__()\n"
+    ).body
+    lowered.body[index:index] = helpers
+    ast.fix_missing_locations(lowered)
+    return lowered
 
 def qtr_runner(filename: str | Path, output_path: str | Path | None = None):
     path = Path(filename)
@@ -17,22 +74,32 @@ def qtr_runner(filename: str | Path, output_path: str | Path | None = None):
     if path.suffix not in (".qtr", ".py"):
         raise ValueError(f"Invalid file extension {path.suffix}. Expected .qtr, .py")
 
-    source_code = path.read_text(encoding="utf-8")
+    install_import_hook()
+    package = _package_for(path)
+    _add_source_dir(path)
 
-    tree = ast_builder.parse_ast(source_code, str(filename))
+    source_code = path.read_text(encoding="utf-8")
+    preload_imports(source_code, str(path), package)
+
+    tree = ast_builder.parse_ast(source_code, str(path))
 
     if output_path:
-        python_source = unparse(ast_builder.lower_ast(tree))
-        runtime_imports = ("from lang_systems.runtime import apply_quantar_operator as __quantar_apply__\n\n")
-        final_code = runtime_imports + python_source
+        lowered = _inject_runtime_imports(tree)
+        final_code = unparse(lowered) + "\n"
 
-        out_path = Path(output_path) if output_path else path.with_suffix(".py")
+        out_path = Path(output_path)
         out_path.write_text(final_code, "utf-8")
         print(f"[COMPILE] Compiled to {out_path}")
 
     else:
-        python_ast = ast_builder.compile_ast(tree, str(filename))
-        exec(python_ast, {"__name__": "__main__", **runtime_globals()})
+        python_ast = ast_builder.compile_ast(tree, str(path))
+        globals_dict = {
+            "__name__": "__main__",
+            "__file__": str(path),
+            "__package__": package,
+            **runtime_globals(),
+        }
+        exec(python_ast, globals_dict)
 
 def main():
     parser = argparse.ArgumentParser("qtr", description="A CLI tool to run .qtr or .py files (Quantar files)")

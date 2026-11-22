@@ -615,7 +615,10 @@ class QuantumComputer:
             for _ in range(shots):
                 outcome = int(rnd.choice(self.dimension, p=probs))
                 parity = 1.0
-                for idx in targets:
+                for idx, p in zip(targets, pauli):
+                    # Identity factors do not contribute to the parity.
+                    if p == 'I':
+                        continue
                     if (outcome >> self.bit_position(idx)) & 1:
                         parity = -parity
                 parity_values.append(parity)
