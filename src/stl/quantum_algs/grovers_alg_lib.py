@@ -5,12 +5,21 @@ simulator keeps an operation history: `uncompute` is what returns the ancilla
 to |0> so it stays clean for the next iteration.
 """
 
+"""Grover's search, usable with either Quantar simulator backend.
+
+The ``qc`` arguments are duck-typed: Python and Rust ``QuantumComputer``
+objects expose the same gate/index API, so no concrete backend class is bound
+here.
+"""
+
 from collections.abc import Callable
+from typing import Any
 
 from numpy import asin, floor, pi, sin, sqrt
 
 import quantum.gate_matrix as gm
-import quantum.qubit_abs as qa
+
+QuantumComputerLike = Any
 
 
 def optimal_iterations(num_items: int, num_targets: int) -> int:
@@ -28,7 +37,7 @@ def optimal_iterations(num_items: int, num_targets: int) -> int:
     return int(max(range(max_iterations + 1), key=success_probability))
 
 
-def grover_oracle(qc: qa.QuantumComputer, data_qubits: list, ancilla_qubit: qa.Qubit, logic_func: Callable):
+def grover_oracle(qc: QuantumComputerLike, data_qubits: list, ancilla_qubit: Any, logic_func: Callable):
     """Flip the ancilla exactly where `logic_func` says a target sits.
 
     `logic_func(qc, data_qubits, ancilla_qubit)` marks a target by X-ing the
@@ -45,7 +54,7 @@ def grover_oracle(qc: qa.QuantumComputer, data_qubits: list, ancilla_qubit: qa.Q
     qc.apply_gate(gm.px_MAT(), [ancilla_qubit])
 
 
-def grover_diffuser(qc: qa.QuantumComputer, data_qubits: list):
+def grover_diffuser(qc: QuantumComputerLike, data_qubits: list):
     """Reflect the amplitudes about their mean: H X (multi-)CZ X H."""
     if not data_qubits:
         return
@@ -65,7 +74,7 @@ def grover_diffuser(qc: qa.QuantumComputer, data_qubits: list):
 
 
 def grovers_alg(
-        qc: qa.QuantumComputer,
+        qc: QuantumComputerLike,
         logic_func: Callable,
         num_targets: int = 1,
         scratch_qubits: list | None = None,
@@ -80,7 +89,9 @@ def grovers_alg(
 
     excluded_indices = {ancilla_qubit.index}
     for qubit in scratch_qubits or []:
-        excluded_indices.add(qubit.index if isinstance(qubit, qa.Qubit) else qc[qubit].index)
+        # Both backends implement index_of(), so handles, indices, and names
+        # all resolve the same way.
+        excluded_indices.add(qc.index_of(qubit))
 
     data_qubits = [qubit for qubit in qc.qubits if qubit.index not in excluded_indices]
     if not data_qubits:
@@ -97,9 +108,9 @@ def grovers_alg(
     return iterations
 
 
-def demo(qc: qa.QuantumComputer):
+def demo(qc: QuantumComputerLike):
     """Demo problem: mark the all-zeroes data register."""
-    def mark_all_zeroes(qc: qa.QuantumComputer, data_qubits: list, ancilla_qubit: qa.Qubit):
+    def mark_all_zeroes(qc: QuantumComputerLike, data_qubits: list, ancilla_qubit: Any):
         for i in data_qubits:
             qc.apply_gate(gm.px_MAT(), [i])
 
@@ -112,7 +123,9 @@ def demo(qc: qa.QuantumComputer):
 
 
 if __name__ == "__main__":
-    quantum_computer = qa.QuantumComputer(4)
+    from quantum import QuantumComputer
+
+    quantum_computer = QuantumComputer(4)
     counts = quantum_computer.sample_parallel(demo, 100000)
 
     results: dict[str, int] = {}

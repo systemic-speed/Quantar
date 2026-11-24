@@ -209,7 +209,7 @@ impl QuantumComputer {
         Ok(())
     }
 
-    fn sample_counts(&self, py: Python<'_>, shots: usize) -> PyResult<Vec<usize>> {
+    fn sample_counts(&mut self, py: Python<'_>, shots: usize) -> PyResult<Vec<usize>> {
         let guard = self.state_vector.bind(py).try_readonly()?;
         let state = contiguous_slice(&guard, "state_vector")?;
         let mut cumulative = Vec::with_capacity(state.len());
@@ -227,9 +227,9 @@ impl QuantumComputer {
             *last = 1.0;
         }
 
-        let mut rng = rand::rng();
         let dimension = state.len();
         let mut counts = vec![0usize; dimension];
+        let rng = &mut self.rng;
         for _ in 0..shots {
             let draw: f64 = rng.random();
             let index = cumulative.partition_point(|value| *value < draw);
@@ -488,14 +488,20 @@ impl QuantumComputer {
                 *last = 1.0;
             }
 
-            let mut rng = rand::rng();
+            let measured_bits: Vec<usize> = targets
+                .iter()
+                .map(|&index| self.bit_position_unchecked(index))
+                .collect();
+            let draws: Vec<f64> = {
+                let rng = &mut self.rng;
+                (0..shots).map(|_| rng.random()).collect()
+            };
             let mut expectation = 0.0;
-            for _ in 0..shots {
-                let draw: f64 = rng.random();
+            for draw in draws {
                 let outcome = cumulative.partition_point(|value| *value < draw);
                 let mut parity = 1.0;
-                for (&index, &operator) in targets.iter().zip(&operators) {
-                    if operator != 'I' && (outcome >> self.bit_position_unchecked(index)) & 1 != 0 {
+                for (&bit, &operator) in measured_bits.iter().zip(&operators) {
+                    if operator != 'I' && (outcome >> bit) & 1 != 0 {
                         parity = -parity;
                     }
                 }
@@ -656,7 +662,7 @@ fn qft_impl(
         return Ok(me);
     }
 
-    let module = py.import("stl.quantum_algs.shors_alg")?;
+    let module = py.import("stl.quantum_algs.shors_alg_lib")?;
     let builder = if inverse {
         "iqft_program"
     } else {
@@ -710,7 +716,7 @@ fn sample_impl(
 
     let counts = me
         .bind(py)
-        .borrow()
+        .borrow_mut()
         .sample_counts(py, num_samples as usize)?;
     let result = PyDict::new(py);
     let width = me.bind(py).borrow().num_qubits;

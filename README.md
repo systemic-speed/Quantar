@@ -144,13 +144,20 @@ quantar.quantum
 quantar.stl
 ```
 
-The underlying packages can still be imported directly:
+Common algorithms and physics helpers are re-exported from `quantar` and `stl`
+too:
 
 ```python
-import quantum
-from stl.quantum_algs.shors_alg import shors_alg
-from stl.physics_algs.units import Quantity, Unit
+import quantar
+from stl import shors_alg, grovers_alg, Quantity
+
+# The implementation modules are still available directly:
+from stl.quantum_algs.shors_alg_lib import shors_alg as shors_alg_impl
+from stl.physics_algs.units import Quantity as QuantityImpl
 ```
+
+See [`docs/API.md`](docs/API.md) for the full import cheat sheet, public API,
+and backend/seed details.
 
 ### Selecting a simulator backend
 
@@ -195,6 +202,44 @@ Environment overrides:
 - `QUANTAR_RUST_BUILD_CACHE` changes the fallback output directory when the
   installed package directory is not writable.
 
+### Reproducible sampling
+
+Both backends share one seed. `set_seed` affects measurement, `sample`,
+`sample_parallel`, `measure_pauli`, and the Rust per-computer RNG:
+
+```python
+import quantum
+
+quantum.set_seed(1234)
+print(quantum.get_seed())          # 1234
+qc = quantum.QuantumComputer(3)
+
+# Recreate the same stream later:
+quantum.set_seed(1234)
+qc = quantum.QuantumComputer(3)
+```
+
+`quantum.get_seed()` generates and remembers a seed from OS entropy on first
+use, so any run can be reproduced afterward. The new seed applies to computers
+and samples created after the call; existing computers keep their generator.
+The compiled extension exposes `quantum.quantar_kernels.set_seed()` /
+`get_seed()` as aliases of the same shared state.
+
+### Build output
+
+Normal `uv build`, `python -m build`, and `pip install .` runs are quiet.
+Dependency deprecation warnings (for example `num-traits 0.2.19`'s deprecated
+`core::f32::NAN` constants) are suppressed because they come from dependencies:
+
+```powershell
+$env:QUANTAR_VERBOSE_BUILD = "1"   # detailed maturin/cargo output
+uv build
+Remove-Item Env:QUANTAR_VERBOSE_BUILD
+
+$env:QUANTAR_STRICT_RUST = "1"     # keep dependency warnings visible
+uv build
+```
+
 ### Building the Rust backend manually
 
 ```powershell
@@ -207,8 +252,43 @@ Copy-Item rust\target\release\quantar_kernels.dll `
   kernels\quantar_kernels.pyd -Force
 ```
 
-For distribution, prefer wheels over copying `.pyd` files by hand. The wheel is
-tagged `cp312-abi3-*`.
+For distribution, prefer wheels over copying `.pyd` files by hand. The
+GIL-enabled wheel is tagged `cp312-abi3-*`; free-threaded builds need their own
+wheels as described below.
+
+### Free-threaded Python
+
+Quantar can build and load the Rust backend on free-threaded CPython. The ABI
+matrix is:
+
+| Interpreter | Extension built from source | Prebuilt wheel to publish |
+| --- | --- | --- |
+| CPython 3.12–3.14, GIL enabled | `abi3` (`abi3-py312`) | `cp312-abi3-*` |
+| CPython 3.14t, free-threaded | version-specific `cp314t` | `cp314t-*` |
+| CPython 3.15/3.15t and newer | `abi3t` (`abi3t-py315`) | `abi3t-*` |
+
+Important details:
+
+- The existing `cp312-abi3-*` wheel **cannot** be installed on a free-threaded
+  interpreter; pip rejects it as unsupported. Install a free-threaded wheel or
+  install from source with the free-threaded interpreter.
+- `python3.14t -m pip install .` compiles a `cp314t` extension automatically.
+- Python 3.15+ uses PEP 803's `abi3t` stable ABI, so one binary works with both
+  GIL-enabled and free-threaded interpreters.
+- PyO3 0.30 no longer supports CPython 3.13t; use 3.14t or newer.
+- The runtime loader detects `Py_GIL_DISABLED`, so local auto-builds never write
+  a GIL-only `abi3` extension for a free-threaded interpreter.
+
+```powershell
+uv python install 3.14t
+uv venv --python 3.14t .venv-3.14t
+.\.venv-3.14t\Scripts\python.exe -m pip install . --no-deps
+.\.venv-3.14t\Scripts\python.exe -c "import quantum; print(quantum.is_free_threaded()); quantum.use_backend('rust')"
+```
+
+The extension declares `gil_used = false`: NumPy access uses borrow guards and
+the heavy kernels run after `py.detach`, so importing it does not force the
+interpreter to re-enable the GIL.
 
 ### Imports in Quantar programs
 
@@ -270,12 +350,57 @@ The generated parser is `src/lang_systems/quantar_parser.py`; the build hook in
 CPython's `Grammar/python.gram` plus the operator overlay in
 `src/lang_systems/quantar.gram`.
 
-## Status
+## Project maturity
 
-Quantar currently provides the parser, AST, quantum library, physics library, a
-CLI runner/compiler, and a VS Code extension with syntax highlighting,
-operator highlighting, and parser diagnostics. A bytecode interpreter and
-debugger are not implemented yet.
+Quantar is usable today as a Python superset for quantum programs, but it is
+still a maturing project. The core language frontend, simulator, Rust backend,
+and CLI are in place; tooling, platform coverage, and the compiled execution
+pipeline are still being expanded. See [roadmap.md](roadmap.md) for the planned
+work.
+
+### What is stable enough to use
+
+- **Language frontend:** the parser and AST builder handle Python syntax plus
+  Quantar's custom infix operators.
+- **Imports:** `.py` imports and `.qtr` module imports work, including operator
+  preloading, sibling modules, and relative imports inside packages.
+- **Simulation:** the pure-Python/NumPy backend is the default and supports the
+  main state-vector operations, circuits, QFT helpers, measurement, sampling,
+  and QASM export.
+- **Rust backend:** the optional compiled backend mirrors the Python API. It
+  uses `abi3-py312` on GIL-enabled CPython and can build for free-threaded
+  interpreters (`cp314t` or `abi3t-py315`). If the extension is missing or
+  stale, Quantar can build it locally when `cargo` and the Rust source tree are
+  available.
+- **CLI:** `qtr` can run or compile `.qtr` files.
+- **LSP basics:** the VS Code extension provides syntax highlighting, operator
+  highlighting, and parser diagnostics.
+
+### What is still evolving
+
+- The Rust backend API is additive and tested for parity, but its surface is
+  still growing.
+- Distribution currently produces a Windows `cp312-abi3` wheel from this
+  checkout; Linux/macOS wheels and prebuilt free-threaded wheels are planned.
+  Free-threaded users can install from source today.
+- The `.qtr` import hook works for common cases, but namespace packages,
+  reloads, and circular-import diagnostics are still being refined.
+- Error messages and source locations are being improved across the parser,
+  runner, and LSP.
+- Performance work is ongoing, especially for multi-controlled gates, common
+  1-qubit/2-qubit kernels, and Python-to-Rust callback reduction.
+
+### What is not implemented yet
+
+- A dedicated Quantar bytecode interpreter.
+- A debugger with breakpoints, stepping, and state inspection.
+- GPU, distributed, or tensor-network execution backends.
+- Full LSP support for completions, hover documentation, and cross-file
+  go-to-definition.
+
+In short: Quantar is ready for experimentation, teaching, prototyping, and
+library use on supported platforms. It is not yet a finished production
+toolchain, and the roadmap tracks the work needed to get there.
 
 ## Feedback
 
@@ -287,4 +412,4 @@ maintainer. The main contributor is
 
 Most of the code was written by people. Some AI assistance was used for
 boilerplate and for explaining the mathematics behind topics such as Kronecker
-products and gate matrices.
+products and gate matrices and for understanding Rust.

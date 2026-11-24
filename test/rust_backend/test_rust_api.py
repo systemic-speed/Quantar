@@ -222,5 +222,33 @@ class SafetyTests(unittest.TestCase):
         gc.collect()
 
 
+class SeedTests(unittest.TestCase):
+    def setUp(self) -> None:
+        import quantum
+
+        self._quantum = quantum
+        self._previous_seed = quantum.get_seed()
+
+    def tearDown(self) -> None:
+        self._quantum.set_seed(self._previous_seed)
+
+    def test_seed_helpers_share_python_state(self) -> None:
+        self.assertTrue(hasattr(rk, "set_seed") and hasattr(rk, "get_seed"))
+        rk.set_seed(4242)
+        self.assertEqual(self._quantum.get_seed(), 4242)
+        self.assertEqual(rk.get_seed(), 4242)
+
+    def test_sampling_is_reproducible(self) -> None:
+        def circuit(qc):
+            qc.apply(gm.h_MAT(), [0])
+            qc.apply(gm.h_MAT(), [1])
+
+        self._quantum.set_seed(1234)
+        first = rk.QuantumComputer(2).sample(circuit, 500)
+        self._quantum.set_seed(1234)
+        second = rk.QuantumComputer(2).sample(circuit, 500)
+        self.assertEqual(first, second)
+
+
 if __name__ == "__main__":
     unittest.main()

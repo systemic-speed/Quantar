@@ -4,6 +4,7 @@ Public API::
 
     from quantum import QuantumComputer, Qubit, Gate, CircuitGate
     from quantum import h_MAT, px_MAT, crk, to_openqasm3
+    from quantum import set_seed, get_seed, use_backend
 
 ``QuantumComputer``, ``Qubit`` and ``Gate`` come from the active backend, which
 is selected with ``use_backend("python")`` or ``use_backend("rust")``.
@@ -19,9 +20,10 @@ Internals are grouped by concern (eight files, not a pile of fragments):
     composites    crk (controlled phase shifts)
     qasm          OpenQASM 3 export
     parse_qasm    OpenQASM 3 import (parse_qasm / load)
+    seed_set      shared seed and RNG for both backends
 
 QFT/IQFT circuit builders (`qft_program`, `qft_gate`, ...) live in
-`stl.quantum_algs.shors_alg`, next to the algorithm that uses them.
+`stl.quantum_algs.shors_alg_lib`, next to the algorithm that uses them.
 """
 
 from quantum import backend
@@ -32,6 +34,7 @@ from quantum.backend import (
     find_rust_source_dir,
     get_backend,
     get_backend_module,
+    is_free_threaded,
     load_rust_backend,
     reset_backend,
     rust_build_available,
@@ -41,6 +44,8 @@ from quantum.backend import (
 from quantum.gate_abs import CompositeGate, CircuitGate
 from quantum import gate_matrix
 from quantum import kernels
+from quantum import seed_set
+from quantum.seed_set import get_seed, make_pcg64, set_seed
 from quantum.gate_matrix import (
     h_MAT, px_MAT, py_MAT, pz_MAT, i_MAT,
     s_MAT, sdg_MAT, t_MAT, tdg_MAT,
@@ -83,6 +88,7 @@ __all__ = [
     "find_rust_source_dir",
     "get_backend",
     "get_backend_module",
+    "is_free_threaded",
     "load_rust_backend",
     "reset_backend",
     "rust_build_available",
@@ -90,6 +96,10 @@ __all__ = [
     "use_backend",
     "gate_matrix",
     "kernels",
+    "seed_set",
+    "set_seed",
+    "get_seed",
+    "make_pcg64",
     "h_MAT", "px_MAT", "py_MAT", "pz_MAT", "i_MAT",
     "s_MAT", "sdg_MAT", "t_MAT", "tdg_MAT",
     "swap_MAT", "iswap_MAT", "swap_sqrt_MAT",

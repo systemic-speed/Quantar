@@ -23,9 +23,18 @@ OVERLAY_GRAMMAR = PACKAGE_ROOT / "quantar.gram"
 MERGED_GRAMMAR = ROOT / "Grammar" / "quantar_merged.gram"
 OUTPUT_PARSER = PACKAGE_ROOT / "quantar_parser.py"
 
-# Pseudo-tokens the overlay grammar references; implemented at runtime in
-# lang_systems/quantar.py (registered here so pegen's checker accepts them).
-EXTRA_TOKENS = {"QUANTUM_OP", "QUANTUM_NAME"}
+# Pseudo-tokens the grammar references but `token.tok_name` may not know about.
+# QUANTUM_* are implemented in lang_systems/quantar.py. TSTRING_* were added in
+# Python 3.14, so they are missing from `token.tok_name` when generating the
+# parser with a 3.12/3.13 build interpreter; pegen's rule checker still needs
+# them to be declared.
+EXTRA_TOKENS = {
+    "QUANTUM_OP",
+    "QUANTUM_NAME",
+    "TSTRING_START",
+    "TSTRING_MIDDLE",
+    "TSTRING_END",
+}
 
 # CPython grammar rules whose names collide (case-insensitively) with pegen's
 # base token methods (e.g. rule `string` vs the STRING token method). pegen

@@ -17,6 +17,16 @@ that behavior. Useful overrides:
     QUANTAR_RUST_SOURCE_DIR   directory containing ``rust/Cargo.toml``
     QUANTAR_CARGO             cargo executable to use
     QUANTAR_RUST_BACKEND_PATH load a specific ``.pyd``/``.so`` instead
+    QUANTAR_STRICT_RUST       keep dependency deprecation warnings visible
+
+Dependency deprecation warnings from crates such as num-traits are suppressed
+during automatic builds by default. Set ``QUANTAR_STRICT_RUST=1`` to see them.
+
+The loader also detects free-threaded CPython (``python3.14t`` and newer) and
+selects a matching extension suffix. A `cp312-abi3` wheel is GIL-only; source
+installs and local auto-builds under a free-threaded interpreter create either
+a version-specific ``cp314t`` extension or, on Python 3.15+, an ``abi3t``
+extension that both interpreter modes can load.
 
 The Rust module is validated on load, so an old/incomplete ``quantar_kernels``
 extension produces a clear error instead of failing later with a missing
@@ -28,9 +38,11 @@ from __future__ import annotations
 import importlib
 import importlib.machinery
 import os
+import re
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import tomllib
@@ -183,14 +195,47 @@ def rust_build_available() -> bool:
     )
 
 
+def is_free_threaded() -> bool:
+    """Return whether this interpreter uses the free-threaded CPython ABI."""
+    disabled = sysconfig.get_config_var("Py_GIL_DISABLED")
+    if disabled:
+        return True
+    is_enabled = getattr(sys, "_is_gil_enabled", None)
+    return callable(is_enabled) and not is_enabled()
+
+
 def _extension_suffix() -> str:
-    """Prefer the generic ABI3 extension suffix for this interpreter."""
+    """Pick an extension suffix compatible with this interpreter's ABI.
+
+    `abi3` wheels cannot be imported by free-threaded CPython, so never choose
+    that suffix in a `python3.14t` process. Python 3.15+ can use the newer
+    `abi3t` stable ABI from both interpreter modes.
+    """
     suffixes = list(importlib.machinery.EXTENSION_SUFFIXES)
+    if not suffixes:  # pragma: no cover - every supported CPython has one
+        return ".pyd" if os.name == "nt" else ".so"
+
+    free_threaded_suffix = re.compile(r"\d+t[-_.]")
+    abi3t = [suffix for suffix in suffixes if "abi3t" in suffix]
+    versioned_ft = [suffix for suffix in suffixes if free_threaded_suffix.search(suffix)]
+
+    if is_free_threaded():
+        if abi3t:
+            return abi3t[0]
+        if versioned_ft:
+            return versioned_ft[0]
+    elif sys.version_info >= (3, 15) and abi3t:
+        return abi3t[0]
+
     abi3 = [suffix for suffix in suffixes if "abi3" in suffix]
     if abi3:
         return abi3[0]
+
+    excluded = set(abi3t) | set(versioned_ft)
     generic = [
-        suffix for suffix in suffixes if sys.implementation.cache_tag not in suffix
+        suffix
+        for suffix in suffixes
+        if suffix not in excluded and sys.implementation.cache_tag not in suffix
     ]
     return generic[-1] if generic else suffixes[-1]
 
@@ -268,6 +313,23 @@ def _tail(text: str, limit: int = 4000) -> str:
     return text if len(text) <= limit else f"...{text[-limit:]}"
 
 
+def _build_environment() -> dict[str, str]:
+    """Return the subprocess environment, without dependency warning spam.
+
+    The same suppression is applied by ``hatch_build.py`` for wheel builds so
+    local auto-builds and packaged builds behave consistently.
+    """
+    env = os.environ.copy()
+    strict = env.get("QUANTAR_STRICT_RUST", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if not strict:
+        flags = env.get("RUSTFLAGS", "").strip()
+        if "-A deprecated" not in flags:
+            env["RUSTFLAGS"] = f"{flags} -A deprecated".strip()
+    return env
+
+
 def _build_rust_backend_unlocked(source_dir: Path | None = None) -> ModuleType:
     global _rust_module
 
@@ -297,7 +359,7 @@ def _build_rust_backend_unlocked(source_dir: Path | None = None) -> ModuleType:
             f"checkout or set {_ENV_RUST_SOURCE}."
         )
 
-    env = os.environ.copy()
+    env = _build_environment()
     env.setdefault("PYO3_PYTHON", sys.executable)
     command = [
         cargo,
@@ -456,6 +518,7 @@ __all__ = [
     "RUST_BACKEND",
     "find_cargo",
     "find_rust_source_dir",
+    "is_free_threaded",
     "rust_build_available",
     "build_rust_backend",
     "load_rust_backend",

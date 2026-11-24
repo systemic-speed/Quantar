@@ -14,8 +14,10 @@ from unittest.mock import patch
 
 import numpy as np
 
+import quantar
 import quantum
 import quantum.backend as backend
+import stl
 from lang_systems.imports import install_import_hook, uninstall_import_hook
 from lang_systems.operators import is_known_operator
 from lang_systems.runner import qtr_runner
@@ -168,10 +170,89 @@ class BackendSelectionTests(unittest.TestCase):
         self.assertIs(quantum.QuantumComputer, PythonQC)
 
 
+class PublicApiTests(unittest.TestCase):
+    def test_umbrella_exports_common_names(self) -> None:
+        for name in (
+            "QuantumComputer", "Qubit", "Gate", "use_backend", "set_seed",
+            "get_seed", "grovers_alg", "shors_alg", "Quantity",
+        ):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(quantar, name))
+        self.assertIn("set_seed", quantar.__all__)
+
+    def test_stl_exports_subpackages_and_algorithms(self) -> None:
+        self.assertIs(stl.quantum_algs.grovers_alg, stl.grovers_alg)
+        self.assertIs(stl.physics_algs.Quantity, stl.Quantity)
+        self.assertTrue(hasattr(stl.quantum_algs, "grovers_alg_lib"))
+        self.assertTrue(hasattr(stl.quantum_algs, "shors_alg_lib"))
+
+    def test_quantum_exports_seed_helpers(self) -> None:
+        self.assertTrue(all(
+            hasattr(quantum, name) for name in ("set_seed", "get_seed", "make_pcg64")
+        ))
+
+
+class SeedTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._previous_seed = quantum.get_seed()
+
+    def tearDown(self) -> None:
+        quantum.set_seed(self._previous_seed)
+
+    def test_set_seed_updates_shared_state_and_generator(self) -> None:
+        quantum.set_seed(1234)
+        self.assertEqual(quantum.get_seed(), 1234)
+        self.assertEqual(quantum.seed_set.get_seed(), 1234)
+
+        first = quantum.seed_set.get_rng().random(4)
+        quantum.set_seed(1234)
+        self.assertTrue(np.array_equal(quantum.seed_set.get_rng().random(4), first))
+
+    def test_sample_counts_is_reproducible(self) -> None:
+        from quantum.kernels import sample_counts
+
+        probabilities = np.array([0.2, 0.3, 0.5])
+        quantum.set_seed(99)
+        first = sample_counts(probabilities, 100, 3)
+        quantum.set_seed(99)
+        second = sample_counts(probabilities, 100, 3)
+        self.assertTrue(np.array_equal(first, second))
+
+    def test_seed_validation(self) -> None:
+        with self.assertRaises(TypeError):
+            quantum.set_seed("1234")  # type: ignore[arg-type]
+        with self.assertRaises(ValueError):
+            quantum.set_seed(-1)
+        with self.assertRaises(ValueError):
+            quantum.set_seed(1 << 64)
+
+
 class RustAutoBuildTests(unittest.TestCase):
     def test_extension_suffix_is_supported(self) -> None:
         suffix = backend._extension_suffix()
         self.assertIn(suffix, importlib.machinery.EXTENSION_SUFFIXES)
+
+    def test_free_threaded_suffix_avoids_gil_only_abi3(self) -> None:
+        suffixes = [".cpython-314t-win_amd64.pyd", ".abi3.pyd", ".pyd"]
+        with (
+            patch.object(backend.sysconfig, "get_config_var", return_value=1),
+            patch.object(backend.importlib.machinery, "EXTENSION_SUFFIXES", suffixes),
+        ):
+            self.assertEqual(backend._extension_suffix(), suffixes[0])
+
+    def test_abi3t_suffix_is_preferred_on_python315(self) -> None:
+        suffixes = [
+            ".cpython-315-win_amd64.pyd",
+            ".abi3t.pyd",
+            ".abi3.pyd",
+            ".pyd",
+        ]
+        with (
+            patch.object(backend.sysconfig, "get_config_var", return_value=0),
+            patch.object(backend.sys, "version_info", (3, 15, 0)),
+            patch.object(backend.importlib.machinery, "EXTENSION_SUFFIXES", suffixes),
+        ):
+            self.assertEqual(backend._extension_suffix(), ".abi3t.pyd")
 
     def test_cargo_discovery_is_safe(self) -> None:
         cargo = backend.find_cargo()
@@ -188,6 +269,23 @@ class RustAutoBuildTests(unittest.TestCase):
             self.assertFalse(backend._auto_build_enabled())
         with patch.dict(os.environ, {backend._ENV_AUTO_BUILD: "1"}):
             self.assertTrue(backend._auto_build_enabled())
+
+    def test_build_environment_suppresses_dependency_warnings(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"QUANTAR_STRICT_RUST": "0", "RUSTFLAGS": "-C opt-level=3"},
+        ):
+            env = backend._build_environment()
+            self.assertIn("-A deprecated", env["RUSTFLAGS"])
+            self.assertEqual(os.environ["RUSTFLAGS"], "-C opt-level=3")
+
+    def test_strict_rust_keeps_warnings(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"QUANTAR_STRICT_RUST": "1", "RUSTFLAGS": "-C opt-level=3"},
+        ):
+            env = backend._build_environment()
+            self.assertEqual(env["RUSTFLAGS"], "-C opt-level=3")
 
 
 if __name__ == "__main__":

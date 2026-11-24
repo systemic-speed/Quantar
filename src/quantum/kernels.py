@@ -219,16 +219,28 @@ def swap_run_kernel(new_state, state, pairs):
     swap_run_numpy(new_state, state, pairs)
 
 
-def sample_counts(probabilities: np.ndarray, num_samples: int, dimension: int) -> np.ndarray:
+def sample_counts(
+    probabilities: np.ndarray,
+    num_samples: int,
+    dimension: int,
+    *,
+    rng=None,
+) -> np.ndarray:
     """Draw `num_samples` basis states from `probabilities`; return counts per state.
 
     Vectorized rather than a numba loop: `searchsorted` over the cumulative
     distribution does the inverse-CDF sampling in C, and it avoids the data race
-    a parallel `counts[draw] += 1` would introduce.
+    a parallel `counts[draw] += 1` would introduce. By default draws come from
+    the shared seed set, so ``quantum.set_seed()`` makes sampling reproducible.
     """
+    if rng is None:
+        from quantum.seed_set import get_rng
+
+        rng = get_rng()
+
     cumulative = np.cumsum(probabilities)
     if cumulative[-1] > 0:
         cumulative /= cumulative[-1]
     cumulative[-1] = 1.0
-    draws = np.searchsorted(cumulative, np.random.rand(num_samples))
+    draws = np.searchsorted(cumulative, rng.random(num_samples))
     return np.bincount(draws, minlength=dimension)

@@ -107,8 +107,6 @@ impl QuantumComputer {
             )));
         }
 
-        // NumPy slices are only valid for contiguous data; a Fortran-ordered
-        // gate is copied once into standard layout instead of being rejected.
         let matrix_view = array.as_standard_layout();
         let matrix_slice = matrix_view
             .as_slice()
@@ -122,9 +120,34 @@ impl QuantumComputer {
             ));
         }
 
-        // offset[column] is the physical basis offset the gate's `column`
-        // value corresponds to. Precomputing it keeps the hot loop to one
-        // array lookup per matrix column.
+        let dimension = self.dimension();
+
+        if num_targets == 1 {
+            let matrix_values = [
+                matrix_slice[0],
+                matrix_slice[1],
+                matrix_slice[2],
+                matrix_slice[3],
+            ];
+            let target_bit = 1usize << target_bits[0];
+
+            let mut state_guard = self.state_vector.bind(py).try_readwrite()?;
+            let state = contiguous_slice_mut(&mut state_guard, "state_vector")?;
+            if state.len() != dimension {
+                return Err(PyValueError::new_err(format!(
+                    "state_vector holds {} amplitudes, expected {}.",
+                    state.len(),
+                    dimension
+                )));
+            }
+
+            py.detach(move || {
+                apply_single_qubit_kernel(state, matrix_values, control_mask, target_bit);
+            });
+
+            return Ok(());
+        }
+
         let mut offsets = vec![0usize; expected_dim];
         for (column, offset) in offsets.iter_mut().enumerate() {
             let mut index = 0usize;
@@ -139,11 +162,11 @@ impl QuantumComputer {
         {
             let state_guard = self.state_vector.bind(py).try_readonly()?;
             let state = contiguous_slice(&state_guard, "state_vector")?;
-            if state.len() != self.dimension() {
+            if state.len() != dimension {
                 return Err(PyValueError::new_err(format!(
                     "state_vector holds {} amplitudes, expected {}.",
                     state.len(),
-                    self.dimension()
+                    dimension
                 )));
             }
 
@@ -305,6 +328,46 @@ pub(crate) fn contiguous_slice_mut<'a>(
         .map_err(|_| PyValueError::new_err(format!("{label} must be C-contiguous.")))
 }
 
+/// In-place 2x2 gate pass.
+///
+/// A chunk covers one setting of every bit above the target. Control bits can
+/// sit *below* the target, so each amplitude must check the full control mask;
+/// checking only the chunk base would skip those gates.
+fn apply_single_qubit_kernel(
+    state: &mut [Complex64],
+    matrix: [Complex64; 4],
+    control_mask: usize,
+    target_bit: usize,
+) {
+    let [m00, m01, m10, m11] = matrix;
+    let step = target_bit << 1;
+    let update_chunk = |(chunk_idx, chunk): (usize, &mut [Complex64])| {
+        let base = chunk_idx * step;
+        let (low, high) = chunk.split_at_mut(target_bit);
+        for i in 0..target_bit {
+            if (base + i) & control_mask != control_mask {
+                continue;
+            }
+            let a0 = low[i];
+            let a1 = high[i];
+            low[i] = m00 * a0 + m01 * a1;
+            high[i] = m10 * a0 + m11 * a1;
+        }
+    };
+
+    if state.len() <= SEQUENTIAL_THRESHOLD {
+        state
+            .chunks_exact_mut(step)
+            .enumerate()
+            .for_each(update_chunk);
+    } else {
+        state
+            .par_chunks_exact_mut(step)
+            .enumerate()
+            .for_each(update_chunk);
+    }
+}
+
 /// The amplitude pass itself. Every input is plain data, so the caller can
 /// safely run it from `py.detach`.
 #[allow(clippy::too_many_arguments)]
@@ -404,6 +467,27 @@ mod tests {
         assert!((scratch[2].re - inv_sqrt2).abs() < 1e-12);
         assert_eq!(scratch[1], z());
         assert_eq!(scratch[3], z());
+    }
+
+    #[test]
+    fn single_qubit_fast_path_checks_all_control_bits() {
+        let x = [z(), one(), one(), z()];
+
+        // Control (physical bit 0) is below target (physical bit 1): |00> is
+        // unchanged, while |01> flips its target to give |11>.
+        let mut state = one_state(4, 0);
+        apply_single_qubit_kernel(&mut state, x, 0b01, 0b10);
+        assert_eq!(state, one_state(4, 0));
+
+        let mut state = one_state(4, 1);
+        apply_single_qubit_kernel(&mut state, x, 0b01, 0b10);
+        assert_eq!(state, one_state(4, 3));
+
+        // Control (physical bit 1) is above target (physical bit 0): |10>
+        // becomes |11>.
+        let mut state = one_state(4, 2);
+        apply_single_qubit_kernel(&mut state, x, 0b10, 0b01);
+        assert_eq!(state, one_state(4, 3));
     }
 
     #[test]

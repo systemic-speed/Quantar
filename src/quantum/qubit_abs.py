@@ -19,8 +19,9 @@ from contextlib import contextmanager
 from typing import overload
 
 import numpy as np
-import numpy.random as rnd
 from typing import Callable
+
+from quantum import seed_set
 
 from quantum.qasm import to_openqasm3
 import quantum.gate_matrix as gm
@@ -75,7 +76,9 @@ class Qubit:
         probability = np.clip(self.alpha(), 0.0, 1.0)
 
         self.is_measured = True
-        self._true_val = int(rnd.choice([0, 1], p=[1 - probability, probability]))
+        self._true_val = int(
+            seed_set.get_rng().choice([0, 1], p=[1 - probability, probability])
+        )
 
         bit = self.computer.bit_position(self.index)
         basis = np.arange(self.computer.dimension)
@@ -528,7 +531,7 @@ class QuantumComputer:
         """Apply a Quantum Fourier Transform to the given qubits.
 
         The transform is built from Hadamards, controlled phase shifts and a
-        bit-reversing swap layer (see `stl.quantum_algs.shors_alg`); runs of
+        bit-reversing swap layer (see `stl.quantum_algs.shors_alg_lib`); runs of
         diagonal phases are fused into one pass over the state. `qubits[0]` is
         treated as the most significant bit.
 
@@ -544,7 +547,7 @@ class QuantumComputer:
         if not targets:
             return self
 
-        from stl.quantum_algs.shors_alg import qft_program, iqft_program
+        from stl.quantum_algs.shors_alg_lib import qft_program, iqft_program
 
         program = (iqft_program if inverse else qft_program)(self, targets)
 
@@ -613,7 +616,7 @@ class QuantumComputer:
 
             parity_values = []
             for _ in range(shots):
-                outcome = int(rnd.choice(self.dimension, p=probs))
+                outcome = int(seed_set.get_rng().choice(self.dimension, p=probs))
                 parity = 1.0
                 for idx, p in zip(targets, pauli):
                     # Identity factors do not contribute to the parity.

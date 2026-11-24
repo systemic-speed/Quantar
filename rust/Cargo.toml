@@ -1,6 +1,6 @@
 [package]
 name = "quantar-kernels"
-version = "1.2.0"
+version = "1.2.1"
 edition = "2021"
 description = "High-performance Rust kernels for Quantar quantum simulations."
 
@@ -9,14 +9,17 @@ name = "quantar_kernels"
 crate-type = ["cdylib"]
 
 [dependencies]
-# abi3-py312 targets CPython's stable ABI. One compiled extension works on
-# Python 3.12+ (including 3.14 and 3.15) instead of needing a separate
-# cp312/cp313/cp314/cp315 build for every minor version.
-pyo3 = { version = "0.30", features = ["extension-module", "multiple-pymethods", "abi3-py312"] }
+# abi3-py312 targets CPython's GIL-enabled stable ABI: one binary covers 3.12+.
+# abi3t-py315 additionally targets PEP 803's free-threaded stable ABI on 3.15+,
+# which both GIL-enabled and free-threaded interpreters can load. On 3.12-3.14
+# PyO3 ignores abi3t, so a free-threaded 3.14 build is version-specific (cp314t).
+pyo3 = { version = "0.30", features = ["extension-module", "multiple-pymethods", "abi3-py312", "abi3t-py315"] }
 numpy = "0.30"
 num-complex = "0.4"
 rayon = "1.10"
 rand = "0.10.4"
+sha2 = "0.11.1"
+rand_pcg = "0.10.3"
 
 [profile.release]
 opt-level = 3

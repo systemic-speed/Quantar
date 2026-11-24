@@ -5,8 +5,12 @@
 //! storage is a real NumPy array, not a Rust `Vec`, so `state_vector` behaves
 //! like the Python attribute (it can be read in place and assigned back).
 //!
-//! This extension is built with PyO3's `abi3-py312` feature: it links only to
-//! CPython's stable ABI, so the same binary loads on Python 3.12 and newer.
+//! On GIL-enabled CPython this extension is built with PyO3's `abi3-py312`
+//! feature: it links only to CPython's stable ABI, so the same binary loads on
+//! Python 3.12 and newer. The `abi3t-py315` feature also lets Python 3.15+
+//! produce a stable-ABI build that both GIL-enabled and free-threaded
+//! interpreters can load. Free-threaded 3.14 uses a version-specific build.
+//!
 //! NumPy is deliberately a runtime dependency; the `numpy` crate resolves its
 //! C API when the module is imported, which keeps the wheel independent of a
 //! particular CPython minor version.
@@ -14,6 +18,7 @@
 mod api;
 mod gate;
 mod gates;
+mod seed;
 
 use gate::Gate;
 use num_complex::Complex64;
@@ -25,6 +30,8 @@ use pyo3::types::{PyDict, PyList, PyModule, PySlice, PyString};
 use rand::RngExt;
 use rayon::prelude::*;
 use std::sync::OnceLock;
+
+use crate::seed::{get_seed, make_pcg64, random_seed};
 
 // Importing a module already loaded in sys.modules is cheap, but these helpers
 // are called on every gate construction, so keep the handles around.
@@ -230,6 +237,9 @@ pub struct QuantumComputer {
     #[pyo3(get)]
     qubits: Vec<Py<Qubit>>,
 
+    // A Quantum computer stores its own random number generator
+    rng: rand_pcg::Pcg64,
+
     // Stored as NumPy arrays so `state_vector` is a real, in-place-mutable
     // Python attribute rather than a copy produced on every access.
     state_vector: Py<PyArray2<Complex64>>,
@@ -276,6 +286,8 @@ impl QuantumComputer {
         let dimension = 1usize << num_qubits;
         let state_vector = new_amplitude_array(py, dimension)?;
         let scratch = new_amplitude_array(py, dimension)?;
+        let seed = get_seed(py)?.unwrap_or_else(random_seed);
+        let rng = make_pcg64(seed);
 
         let computer = Py::new(
             py,
@@ -283,6 +295,7 @@ impl QuantumComputer {
                 num_qubits,
                 name,
                 qubits: Vec::with_capacity(num_qubits),
+                rng,
                 state_vector,
                 scratch,
                 op_hist: PyList::empty(py).unbind(),
@@ -595,8 +608,7 @@ impl QuantumComputer {
 
     fn collapse_at(&mut self, py: Python<'_>, qubit_index: usize) -> PyResult<u8> {
         let probability = self.alpha_at(py, qubit_index)?.clamp(0.0, 1.0);
-        let mut rng = rand::rng();
-        let outcome = u8::from(rng.random_bool(probability));
+        let outcome = u8::from(self.rng.random_bool(probability));
 
         let bit = self.bit_position_unchecked(qubit_index);
         let mask = 1usize << bit;
@@ -698,11 +710,15 @@ fn state_array_from_value(
     Ok(array.unbind())
 }
 
-#[pymodule]
+/// NumPy borrow guards and `py.detach` keep the kernels safe on free-threaded
+/// CPython, so explicitly declare that importing this module does not require
+/// the interpreter to re-enable the GIL.
+#[pymodule(gil_used = false)]
 fn quantar_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Qubit>()?;
     m.add_class::<QuantumComputer>()?;
     m.add_class::<Gate>()?;
     m.add_class::<api::SuppressHistory>()?;
+    seed::register(m)?;
     Ok(())
 }
