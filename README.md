@@ -156,6 +156,12 @@ from stl.quantum_algs.shors_alg_lib import shors_alg as shors_alg_impl
 from stl.physics_algs.units import Quantity as QuantityImpl
 ```
 
+Physics helpers share the same shortcut: `quantar.VectorField`,
+`quantar.momentum`, and `quantar.angular_momentum` resolve lazily. Numeric hot
+paths in `stl.physics_algs` (kinetic energy, Lorentz forces, finite differences,
+and Verlet steps) use compiled Rust kernels when available and identical NumPy
+fallbacks otherwise. Check with `stl.physics_algs.rust_available()`.
+
 See [`docs/API.md`](docs/API.md) for the full import cheat sheet, public API,
 and backend/seed details.
 

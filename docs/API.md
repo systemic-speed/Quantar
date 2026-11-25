@@ -1,7 +1,8 @@
 # Quantar API guide
 
-Version 1.2.1. This page is the quick map of "where do I import X from?" and
-documents the public behavior that is easy to miss.
+Version 1.2.2 (in development; 1.2.1 is the current release). This page is the
+quick map of "where do I import X from?" and documents the public behavior that
+is easy to miss.
 
 ## Import styles
 
@@ -40,7 +41,7 @@ are resolved on first access.
 | Backend | `use_backend`, `set_backend`, `get_backend`, `available_backends`, `load_rust_backend`, `build_rust_backend`, `is_free_threaded` |
 | Seeding | `set_seed`, `get_seed`, `make_pcg64` |
 | Algorithms | `grovers_alg`, `shors_alg`, `qft_gate`, `iqft_gate`, `factor`, `Ansatz`, `Hamiltonian`, `QuantumOptimizer` |
-| Physics | `Quantity`, `Unit`, `Q`, `SI`, `Dual`, `VectorField` |
+| Physics | `Quantity`, `Unit`, `Q`, `SI`, `Dual`, `VectorField`, `SpaceMetric`, `Trajectory`, `gradient`, `hessian`, `laplacian`, `momentum`, `angular_momentum`, `rust_available`, `use_rust_physics` |
 | Modules | `lang_systems`, `quantum`, `stl`, `quantum_algs`, `physics_algs` |
 
 The full list is always available at runtime:
@@ -79,12 +80,101 @@ from stl.quantum_algs import (
     grovers_alg, grover_oracle, grover_diffuser,
     factor, is_probable_prime, Ansatz, Hamiltonian, QuantumOptimizer,
 )
-from stl.physics_algs import Quantity, Unit, SI, Dual, VectorField, Trajectory
+from stl.physics_algs import (
+    Quantity, Unit, SI, Q, Dual, VectorField, SpaceMetric, Trajectory,
+    gradient, hessian, laplacian, momentum, angular_momentum,
+    rust_available, use_rust_physics,
+)
 ```
 
 The Shor and Grover functions moved into `shors_alg_lib.py` and
 `grovers_alg_lib.py` in 1.2.1. Import the functions from `stl.quantum_algs`
 instead of the old module paths; the function names did not change.
+
+### Physics helpers
+
+The physics side is meant to remove bookkeeping: units carry their dimensions,
+`Dual` propagates derivatives through ordinary arithmetic, and `VectorField`
+evaluates and differentiates fields on points. Everything below runs on plain
+Python callables; the numeric reductions use Rust when the extension is present
+and NumPy otherwise.
+
+```python
+import numpy as np
+from stl.physics_algs import (
+    Q, Dual, VectorField, gradient, hessian, laplacian,
+    momentum, angular_momentum, velocity_verlet, SpaceMetric,
+)
+
+# Units check dimensions and convert on request.
+distance = Q(12, "km").to("m")       # 12000 m
+speed = Q(36, "km/h").to("m/s")      # 10 m/s
+travel_time = distance / speed       # 1200 s
+
+# Forward-mode automatic differentiation, no symbolic algebra needed.
+x = Dual(3.0, [1.0])                 # value 3, dx/dx = 1
+y = x * x + 2 * x
+print(y.real, y.dual.tolist())       # 15.0 [8.0]
+print(Dual.value_and_gradient(lambda xs: xs[0] ** 2, [3.0]))
+# (9.0, array([6.0]))
+print(Dual.jacobian(lambda xs: [xs[0] ** 2, xs[0] * xs[1]], [2.0, 3.0]))
+# [[4. 0.]
+#  [3. 2.]]
+
+# Fields work on one point or a batch of points.
+field = VectorField(lambda p: [-p[1], p[0]])
+print(field([1.0, 2.0]))                         # [-2.  1.]
+print(round(float(field.divergence([1.0, 2.0])), 6))  # 0.0
+print(round(float(field.curl([1.0, 2.0])), 6))   # 2.0
+print(field.jacobian([[1.0, 2.0], [3.0, 4.0]]).shape)  # (2, 2, 2)
+print(np.round(field.hessian([1.0, 2.0]), 4))    # two zero 2x2 blocks
+print(field.laplacian([1.0, 2.0]))               # [0. 0.]
+
+# Scalar derivatives use the same finite-difference machinery.
+scalar = lambda p: p[0] ** 2 + p[1] ** 3
+print(gradient(scalar, [2.0, 3.0]))              # [ 4. 27.]
+print(np.round(hessian(scalar, [2.0, 3.0]), 3))  # [[2. 0.] [0. 18.]]
+print(round(float(laplacian(scalar, [2.0, 3.0])), 3))  # 20.0
+
+# Dynamics: trajectory summaries and momentum helpers.
+orbit = velocity_verlet([1.0, 0.0], [0.0, 1.0], 0.01, 628, lambda point: -point)
+print(len(orbit), round(float(orbit.speeds()[-1]), 4))       # 629 1.0
+print(round(float(orbit.kinetic_energies()[-1]), 4))         # 0.5
+print(momentum([3.0, 4.0], 2.0))                            # [6. 8.]
+print(angular_momentum([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]))   # [0. 0. 1.]
+print(round(SpaceMetric("spherical").volume_element([2.0, np.pi / 2, 0.0]), 6))
+# 4.0
+```
+
+`Q(value, "unit")` is the quick constructor; `Quantity(value, unit_object)` is
+the explicit form. `velocity_verlet` returns a `Trajectory` with positions,
+velocities and times, plus `speeds()`, `momenta()`, `angular_momentum()` and
+`energy(potential)` for analysis. `SpaceMetric` supplies scale factors for
+cartesian, spherical and cylindrical coordinates, including `volume_element()`
+for integration weights.
+
+#### Rust-backed physics kernels
+
+Four hot paths use compiled kernels in `quantum.quantar_kernels`: kinetic-energy
+sums, Lorentz forces, central-difference reductions (Jacobians, gradients,
+Hessians), and the two velocity-Verlet half-steps. They release the GIL and
+parallelise with rayon for large batches. Your own field/acceleration functions
+remain ordinary Python callables; only the numeric work is moved.
+
+```python
+from stl.physics_algs import rust_available, use_rust_physics
+
+if rust_available():
+    print("compiled physics kernels active")
+use_rust_physics(False)   # force the NumPy implementations
+print(use_rust_physics()) # False (or True after re-enabling)
+```
+
+Setting `QUANTAR_PHYSICS_KERNELS=0` before import does the same thing without
+code changes. The loader checks the installed extension for the required
+functions and falls back silently if it is missing or older than 1.2.2; it does
+not trigger a Rust build for physics-only programs. Direct access to the
+kernels, including their NumPy twins, is in `stl.physics_algs.kernels`.
 
 ### `lang_systems`
 

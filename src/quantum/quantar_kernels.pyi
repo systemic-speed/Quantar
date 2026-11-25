@@ -106,3 +106,42 @@ class QuantumComputer:
     def register_operator(self, name: str, matrix: npt.ArrayLike | Callable[..., Any]) -> None: ...
     def get_operator(self, name: str) -> Any | None: ...
     def list_operators(self) -> list[str]: ...
+
+# Physics kernels (see stl.physics_algs.kernels for the NumPy fallbacks).
+
+def kinetic_energy(
+    velocities: npt.ArrayLike,
+    masses: float | npt.ArrayLike | None = None,
+) -> float: ...
+def lorentz_force(
+    charge: float,
+    electric: npt.ArrayLike,
+    magnetic: npt.ArrayLike,
+    velocity: npt.ArrayLike,
+) -> npt.NDArray[np.float64]: ...
+def jacobian_from_offsets(
+    values: npt.ArrayLike,
+    n: int,
+    dim: int,
+    out_dim: int,
+    h: float,
+) -> npt.NDArray[np.float64]: ...
+def verlet_position(
+    positions: npt.ArrayLike,
+    velocities: npt.ArrayLike,
+    acceleration: npt.ArrayLike,
+    dt: float,
+) -> npt.NDArray[np.float64]: ...
+def verlet_velocity(
+    velocities: npt.ArrayLike,
+    acceleration: npt.ArrayLike,
+    next_acceleration: npt.ArrayLike,
+    dt: float,
+) -> npt.NDArray[np.float64]: ...
+def verlet_update(
+    positions: npt.ArrayLike,
+    velocities: npt.ArrayLike,
+    acceleration: npt.ArrayLike,
+    next_acceleration: npt.ArrayLike,
+    dt: float,
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]: ...

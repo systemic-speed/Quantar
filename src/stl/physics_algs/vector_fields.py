@@ -19,6 +19,8 @@ from __future__ import annotations
 import numpy as np
 from typing import Callable
 
+from . import kernels as _kernels
+
 
 def _as_points(points) -> tuple[np.ndarray, bool]:
     """Return ``(points_2d, single)`` for a point or a batch of points."""
@@ -131,18 +133,32 @@ class VectorField:
     # ─── Differential operators ───
 
     def _central(self, points, h: float):
-        """Return the central-difference Jacobian and single-point flag."""
+        """Return the central-difference Jacobian and single-point flag.
+
+        All offset points are evaluated in one batch, then reduced by the
+        compiled Jacobian kernel (or its NumPy twin). This keeps the callback
+        count low for batched fields and makes the reduction a single pass.
+        """
         if h <= 0:
             raise ValueError("h must be positive.")
         array, single = _as_points(points)
-        base = self._vectors(array)
-        dim = array.shape[1]
-        jacobian = np.empty((array.shape[0], base.shape[1], dim), dtype=float)
-        for axis in range(dim):
-            step = _step_along(axis, dim, h)
-            plus = self._vectors(array + step)
-            minus = self._vectors(array - step)
-            jacobian[:, :, axis] = (plus - minus) / (2.0 * h)
+        n, dim = array.shape
+        offsets = np.concatenate(
+            [
+                pair
+                for axis in range(dim)
+                for pair in (
+                    array + _step_along(axis, dim, h),
+                    array - _step_along(axis, dim, h),
+                )
+            ],
+            axis=0,
+        )
+        values = self._vectors(offsets)
+        out_dim = values.shape[1]
+        jacobian = _kernels.jacobian_from_offsets(
+            values.reshape(-1), n, dim, out_dim, h
+        )
         return jacobian, single
 
     def jacobian(self, points, h: float = 1e-6):
@@ -190,6 +206,43 @@ class VectorField:
             raise ValueError("Curl is only implemented for 1D, 2D and 3D fields.")
         if in_dim in (1, 2):
             return float(values[0]) if single else values
+        return values[0] if single else values
+
+    def hessian(self, points, h: float = 1e-5):
+        """Second derivatives ``d²F_i / dx_a dx_j`` at each point.
+
+        Returns ``(out_dim, dim, dim)`` for one point or
+        ``(n, out_dim, dim, dim)`` for a batch. The result is built from two
+        passes of the central-difference Jacobian, so it is substantially more
+        sensitive to roundoff than the first derivatives: keep ``h`` moderate.
+        """
+        if h <= 0:
+            raise ValueError("h must be positive.")
+        array, single = _as_points(points)
+        n, dim = array.shape
+        offsets = np.concatenate(
+            [
+                pair
+                for axis in range(dim)
+                for pair in (
+                    array + _step_along(axis, dim, h),
+                    array - _step_along(axis, dim, h),
+                )
+            ],
+            axis=0,
+        )
+        jacobians = self.jacobian(offsets, h).reshape(2 * dim, n, -1, dim)
+        out_dim = jacobians.shape[2]
+        hessian = _kernels.jacobian_from_offsets(
+            jacobians.reshape(-1), n, dim, out_dim * dim, h
+        ).reshape(n, out_dim, dim, dim)
+        return hessian[0] if single else hessian
+
+    def laplacian(self, points, h: float = 1e-5):
+        """Vector Laplacian: ``sum_j d²F_i / dx_j²`` at each point."""
+        hessian = self.hessian(points, h)
+        single = np.ndim(hessian) == 3
+        values = np.trace(hessian, axis1=-2, axis2=-1)
         return values[0] if single else values
 
     # ─── Integrals and trajectories ───
@@ -240,31 +293,70 @@ def gradient(scalar_field: Callable, points, h: float = 1e-6):
     if h <= 0:
         raise ValueError("h must be positive.")
     array, single = _as_points(points)
-    dim = array.shape[1]
-    result = np.empty((array.shape[0], dim), dtype=float)
-    for axis in range(dim):
-        step = _step_along(axis, dim, h)
-        plus = np.asarray(
-            [scalar_field(point) for point in array + step],
-            dtype=float,
-        )
-        minus = np.asarray(
-            [scalar_field(point) for point in array - step],
-            dtype=float,
-        )
-        result[:, axis] = (plus - minus) / (2.0 * h)
+    n, dim = array.shape
+    offsets = np.concatenate(
+        [
+            pair
+            for axis in range(dim)
+            for pair in (
+                array + _step_along(axis, dim, h),
+                array - _step_along(axis, dim, h),
+            )
+        ],
+        axis=0,
+    )
+    values = np.asarray([scalar_field(point) for point in offsets], dtype=float)
+    result = _kernels.jacobian_from_offsets(
+        values.reshape(-1, 1), n, dim, 1, h
+    )[:, 0, :]
     return result[0] if single else result
+
+
+def hessian(scalar_field: Callable, points, h: float = 1e-5):
+    """Numerical Hessian ``d²f / dx_i dx_j`` of a point-wise scalar field.
+
+    Returns ``(dim, dim)`` for one point or ``(n, dim, dim)`` for a batch.
+    Like :func:`gradient`, the field stays a plain Python callable; only the
+    reductions are handed to the compiled kernel.
+    """
+    if h <= 0:
+        raise ValueError("h must be positive.")
+    array, single = _as_points(points)
+    n, dim = array.shape
+    offsets = np.concatenate(
+        [
+            pair
+            for axis in range(dim)
+            for pair in (
+                array + _step_along(axis, dim, h),
+                array - _step_along(axis, dim, h),
+            )
+        ],
+        axis=0,
+    )
+    gradients = gradient(scalar_field, offsets, h).reshape(2 * dim, n, dim)
+    values = _kernels.jacobian_from_offsets(
+        gradients.reshape(-1), n, dim, dim, h
+    )
+    return values[0] if single else values
+
+
+def laplacian(scalar_field: Callable, points, h: float = 1e-5):
+    """Scalar Laplacian ``sum_i d²f / dx_i²`` at each point."""
+    values = np.trace(hessian(scalar_field, points, h), axis1=-2, axis2=-1)
+    array, single = _as_points(points)
+    return float(values) if single else values
 
 
 def lorentz_force(charge, electric, magnetic, velocity):
     """Lorentz force ``q (E + v × B)`` for 3D vectors (broadcasting supported)."""
-    electric = np.asarray(electric, dtype=float)
-    magnetic = np.asarray(magnetic, dtype=float)
-    velocity = np.asarray(velocity, dtype=float)
-    electric, magnetic, velocity = np.broadcast_arrays(electric, magnetic, velocity)
-    if electric.shape[-1] != 3:
-        raise ValueError("lorentz_force expects 3D vectors.")
-    return charge * (electric + np.cross(velocity, magnetic))
+    return _kernels.lorentz_force(charge, electric, magnetic, velocity)
 
 
-__all__ = ["VectorField", "gradient", "lorentz_force"]
+__all__ = [
+    "VectorField",
+    "gradient",
+    "hessian",
+    "laplacian",
+    "lorentz_force",
+]

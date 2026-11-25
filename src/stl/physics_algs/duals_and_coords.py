@@ -5,6 +5,8 @@ import inspect
 import numpy as np
 from typing import Callable, Literal
 
+from . import kernels as _kernels
+
 
 class Dual:
     """Dual number for forward-mode automatic differentiation.
@@ -136,6 +138,29 @@ class Dual:
         return func(inputs)
 
     @classmethod
+    def value_and_gradient(cls, func: Callable, point: list):
+        """Evaluate a scalar ``func`` and return ``(value, gradient)``.
+
+        ``func`` receives a list of :class:`Dual` numbers and returns one.
+        """
+        result = cls.gradient(func, point)
+        if not isinstance(result, Dual):
+            raise TypeError("value_and_gradient expects a scalar Dual result.")
+        return result.real, np.asarray(result.dual, dtype=float)
+
+    @classmethod
+    def jacobian(cls, func: Callable, point: list):
+        """Jacobian of a vector-valued ``func`` at ``point``.
+
+        ``func`` receives a list of :class:`Dual` numbers and returns a
+        sequence of them. The result has shape ``(outputs, inputs)``.
+        """
+        result = cls.gradient(func, point)
+        if isinstance(result, Dual):
+            return np.asarray(result.dual, dtype=float).reshape(1, -1)
+        return np.asarray([np.asarray(value.dual, dtype=float) for value in result])
+
+    @classmethod
     def integrate_nd(cls, func: Callable, bounds: list, deg: int = 20):
         """N-dimensional numerical integration using Gauss-Legendre quadrature.
 
@@ -249,12 +274,19 @@ class SpaceMetric:
     raw gradients (partial derivatives) into physical gradients.
     """
 
+    _SYSTEMS = ("cartesian", "spherical", "cylindrical")
+    _COORDINATES = {"cartesian": None, "spherical": 3, "cylindrical": 3}
+
     def __init__(self, system: Literal["cartesian", "spherical", "cylindrical"] = "cartesian"):
         """Initialize metric for given coordinate system.
 
         Args:
             system: One of "cartesian", "spherical", "cylindrical".
         """
+        if system not in self._SYSTEMS:
+            raise ValueError(
+                f"Unknown metric system {system!r}; choose one of {', '.join(self._SYSTEMS)}."
+            )
         self.system = system
 
     def scale_factors(self, coords):
@@ -266,15 +298,18 @@ class SpaceMetric:
         Returns:
             List of scale factors for each coordinate.
         """
+        expected = self._COORDINATES[self.system]
+        if expected is not None and len(coords) != expected:
+            raise ValueError(
+                f"The {self.system} metric needs {expected} coordinates, got {len(coords)}."
+            )
         if self.system == "cartesian":
             return [1.0 for _ in coords]
-        elif self.system == "spherical":
+        if self.system == "spherical":
             r, theta = coords[0], coords[1]
             return [1.0, r, r * np.sin(theta)]
-        elif self.system == "cylindrical":
-            rho = coords[0]
-            return [1.0, rho, 1.0]
-        raise ValueError("Unknown metric system.")
+        rho = coords[0]
+        return [1.0, rho, 1.0]
 
     def transform_gradient(self, raw_gradient, coords):
         """Transform raw partial derivatives to physical gradient components.
@@ -287,7 +322,20 @@ class SpaceMetric:
             Physical gradient components.
         """
         h = self.scale_factors(coords)
+        if len(raw_gradient) != len(h):
+            raise ValueError(
+                f"Expected {len(h)} gradient components, got {len(raw_gradient)}."
+            )
         return [raw_gradient[i] / h[i] for i in range(len(h))]
+
+    def volume_element(self, coords) -> float:
+        """Scale-factor product ``h1 h2 h3`` for volume integrals.
+
+        For spherical coordinates this is ``r² sin(theta)``; for cylindrical
+        coordinates it is ``rho``. Cartesian space has a unit element.
+        """
+        factors = self.scale_factors(coords)
+        return float(np.prod(factors)) if factors else 1.0
 
 
 # --- Classical dynamics ------------------------------------------------------
@@ -308,10 +356,33 @@ def kinetic_energy(velocities, masses=1.0) -> float:
     """Kinetic energy ``0.5 * sum(m * v**2)`` for one configuration.
 
     ``masses`` may be a scalar, per-particle ``(n,)``, or per-component array.
+    The reduction runs in Rust when the extension is available.
     """
+    return _kernels.kinetic_energy(velocities, masses)
+
+
+def momentum(velocities, masses=1.0) -> np.ndarray:
+    """Linear momentum ``p = m v`` with the same mass broadcasting rules."""
     velocities = np.asarray(velocities, dtype=float)
-    mass = _broadcast_mass(masses, velocities.shape)
-    return float(0.5 * np.sum(mass * velocities * velocities))
+    return _broadcast_mass(masses, velocities.shape) * velocities
+
+
+def angular_momentum(positions, velocities, masses=1.0, origin=None) -> np.ndarray:
+    """Orbital angular momentum ``L = r x p`` for 3D vectors.
+
+    ``positions`` and ``velocities`` must share a shape ending in 3. ``origin``
+    shifts the position vectors; it may be a single 3-vector or broadcast like
+    ``positions``.
+    """
+    positions = np.asarray(positions, dtype=float)
+    velocities = np.asarray(velocities, dtype=float)
+    if positions.shape != velocities.shape:
+        raise ValueError("positions and velocities must have the same shape.")
+    if positions.shape[-1] != 3:
+        raise ValueError("angular_momentum expects 3D vectors.")
+    if origin is not None:
+        positions = positions - np.asarray(origin, dtype=float)
+    return np.cross(positions, momentum(velocities, masses))
 
 
 def _required_parameters(function):
@@ -380,6 +451,25 @@ class Trajectory:
         return np.asarray(
             [kinetic_energy(velocity, masses) for velocity in self.velocities],
             dtype=float,
+        )
+
+    def kinetic_energies(self, masses=1.0) -> np.ndarray:
+        """Alias for :meth:`kinetic_energy`, for symmetry with the other series."""
+        return self.kinetic_energy(masses)
+
+    def speeds(self) -> np.ndarray:
+        """Speed magnitude at every sampled time."""
+        return np.linalg.norm(self.velocities, axis=-1)
+
+    def momenta(self, masses=1.0) -> np.ndarray:
+        """Linear momentum at every sampled time."""
+        return np.asarray([momentum(v, masses) for v in self.velocities])
+
+    def angular_momentum(self, masses=1.0, origin=None) -> np.ndarray:
+        """Orbital angular momentum at every sampled time."""
+        return np.asarray(
+            [angular_momentum(x, v, masses, origin)
+             for x, v in zip(self.positions, self.velocities)]
         )
 
     def energy(self, potential: Callable, masses=1.0) -> np.ndarray:
@@ -463,10 +553,10 @@ def velocity_verlet(
     velocities_out = [v.copy()]
 
     for step in range(1, steps + 1):
-        x = x + v * dt + 0.5 * accel * dt * dt
+        x = _kernels.verlet_position(x, v, accel, dt)
         current_time = t0 + step * dt
         new_accel = evaluate_acceleration(x, v, current_time)
-        v = v + 0.5 * (accel + new_accel) * dt
+        v = _kernels.verlet_velocity(v, accel, new_accel, dt)
         accel = new_accel
 
         if step % save_every == 0 or step == steps:

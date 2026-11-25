@@ -18,6 +18,7 @@
 mod api;
 mod gate;
 mod gates;
+mod physics;
 mod seed;
 
 use gate::Gate;
@@ -720,5 +721,6 @@ fn quantar_kernels(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Gate>()?;
     m.add_class::<api::SuppressHistory>()?;
     seed::register(m)?;
+    physics::register(m)?;
     Ok(())
 }

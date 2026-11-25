@@ -4,13 +4,25 @@ from .duals_and_coords import (
     Dual,
     SpaceMetric,
     Trajectory,
+    angular_momentum,
     dual_einsum,
     dual_kron,
     dual_norm,
     kinetic_energy,
+    momentum,
     velocity_verlet,
 )
-from .vector_fields import VectorField, gradient, lorentz_force
+from .vector_fields import (
+    VectorField,
+    gradient,
+    hessian,
+    laplacian,
+    lorentz_force,
+)
+from .kernels import (
+    rust_available,
+    use_rust_physics,
+)
 from .units import (
     DIMENSIONLESS,
     DimensionError,
@@ -32,14 +44,20 @@ __all__ = [
     "Dual",
     "SpaceMetric",
     "Trajectory",
+    "angular_momentum",
     "dual_einsum",
     "dual_kron",
     "dual_norm",
     "kinetic_energy",
+    "momentum",
     "velocity_verlet",
     "VectorField",
     "gradient",
+    "hessian",
+    "laplacian",
     "lorentz_force",
+    "rust_available",
+    "use_rust_physics",
     "DIMENSIONLESS",
     "DimensionError",
     "Q",

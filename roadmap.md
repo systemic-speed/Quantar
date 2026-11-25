@@ -86,6 +86,24 @@ large it is.
 
 ---
 
+## Post-1.2.1 (on `main`, not yet released)
+
+### Physics kernels and helpers
+
+- Rust kernels in `quantar_kernels` for kinetic energy, Lorentz forces,
+  central-difference Jacobians/gradients/Hessians, and velocity-Verlet steps.
+- NumPy twins live next to them in `stl.physics_algs.kernels`; choosing the
+  compiled path can be done with `use_rust_physics()` or
+  `QUANTAR_PHYSICS_KERNELS=0`. Missing or stale extensions fall back silently.
+- New helpers: `VectorField.hessian()`/`laplacian()`, scalar `hessian()`/
+  `laplacian()`, `momentum()`, `angular_momentum()`, `Dual.jacobian()`/
+  `value_and_gradient()`, `SpaceMetric.volume_element()`, and `Trajectory`
+  series methods.
+- Version in the source tree is `1.2.2`. No tag or PyPI upload has been made
+  for these changes yet.
+
+---
+
 ## Next: 1.3.0
 
 Theme: **make it faster, safer, reproducible, and available everywhere**.

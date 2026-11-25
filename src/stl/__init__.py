@@ -32,6 +32,17 @@ _EXPORTS = {
     "SI": ("stl.physics_algs", "SI"),
     "Dual": ("stl.physics_algs", "Dual"),
     "VectorField": ("stl.physics_algs", "VectorField"),
+    "SpaceMetric": ("stl.physics_algs", "SpaceMetric"),
+    "Trajectory": ("stl.physics_algs", "Trajectory"),
+    "gradient": ("stl.physics_algs", "gradient"),
+    "hessian": ("stl.physics_algs", "hessian"),
+    "laplacian": ("stl.physics_algs", "laplacian"),
+    "kinetic_energy": ("stl.physics_algs", "kinetic_energy"),
+    "momentum": ("stl.physics_algs", "momentum"),
+    "angular_momentum": ("stl.physics_algs", "angular_momentum"),
+    "velocity_verlet": ("stl.physics_algs", "velocity_verlet"),
+    "rust_available": ("stl.physics_algs", "rust_available"),
+    "use_rust_physics": ("stl.physics_algs", "use_rust_physics"),
 }
 
 
