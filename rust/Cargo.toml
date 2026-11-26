@@ -1,6 +1,6 @@
 [package]
 name = "quantar-kernels"
-version = "1.2.2"
+version = "1.2.3"
 edition = "2021"
 description = "High-performance Rust kernels for Quantar quantum simulations."
 

@@ -24,7 +24,7 @@ def _load_quantum_operators() -> None:
         return
 
 
-def _common_computer(operands: tuple[Any, ...]):
+def __common_computer(operands: tuple[Any, ...]):
     computer = getattr(operands[0], "computer", None)
     if computer is None:
         raise TypeError("gate operators require qubit operands")
@@ -49,7 +49,7 @@ def apply_quantar_operator(name: str, *operands: Any) -> Any:
             raise ValueError(f"Operator {name!r} is not a usable matrix")
         if not operands:
             return matrix
-        computer = _common_computer(operands)
+        computer = __common_computer(operands)
         return computer.apply_gate(matrix, target_qubits=list(operands))
 
     return apply_operator(name, *operands)

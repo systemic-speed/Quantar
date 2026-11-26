@@ -1,6 +1,6 @@
 # Quantar API guide
 
-Version 1.2.2 (in development; 1.2.1 is the current release). This page is the
+Version 1.2.3 (current release). This page is the
 quick map of "where do I import X from?" and documents the public behavior that
 is easy to miss.
 
@@ -172,7 +172,7 @@ print(use_rust_physics()) # False (or True after re-enabling)
 
 Setting `QUANTAR_PHYSICS_KERNELS=0` before import does the same thing without
 code changes. The loader checks the installed extension for the required
-functions and falls back silently if it is missing or older than 1.2.2; it does
+functions and falls back silently if it is missing or older than 1.2.3; it does
 not trigger a Rust build for physics-only programs. Direct access to the
 kernels, including their NumPy twins, is in `stl.physics_algs.kernels`.
 

@@ -99,8 +99,7 @@ large it is.
   `laplacian()`, `momentum()`, `angular_momentum()`, `Dual.jacobian()`/
   `value_and_gradient()`, `SpaceMetric.volume_element()`, and `Trajectory`
   series methods.
-- Version in the source tree is `1.2.2`. No tag or PyPI upload has been made
-  for these changes yet.
+- Version in the source tree is `1.2.3`, tagged `v1.2.3`.
 
 ---
 

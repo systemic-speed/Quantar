@@ -155,7 +155,7 @@ def kinetic_energy(velocities, masses=1.0) -> float:
     module = _rust_module()
     if module is not None:
         try:
-            return float(module.kinetic_energy(velocities, masses))
+            return float(module.kinetic_energy(velocities, masses)) #type: ignore
         except (TypeError, ValueError):
             pass
     return kinetic_energy_numpy(velocities, masses)
@@ -170,7 +170,7 @@ def lorentz_force(charge, electric, magnetic, velocity) -> np.ndarray:
     module = _rust_module()
     if module is not None and electric.shape[-1] == 3:
         try:
-            result = module.lorentz_force(charge, electric, magnetic, velocity)
+            result = module.lorentz_force(charge, electric, magnetic, velocity) #type: ignore
             return np.asarray(result, dtype=float).reshape(electric.shape)
         except (TypeError, ValueError):
             pass
@@ -187,7 +187,7 @@ def jacobian_from_offsets(values, n: int, dim: int, out_dim: int, h: float) -> n
     if module is not None:
         try:
             return np.asarray(
-                module.jacobian_from_offsets(values, n, dim, out_dim, h), dtype=float
+                module.jacobian_from_offsets(values, n, dim, out_dim, h), dtype=float #type: ignore
             )
         except (TypeError, ValueError):
             pass
@@ -200,7 +200,7 @@ def verlet_position(positions, velocities, acceleration, dt: float) -> np.ndarra
     if module is not None:
         try:
             return np.asarray(
-                module.verlet_position(positions, velocities, acceleration, dt), dtype=float
+                module.verlet_position(positions, velocities, acceleration, dt), dtype=float #type: ignore
             )
         except (TypeError, ValueError):
             pass
@@ -213,7 +213,7 @@ def verlet_velocity(velocities, acceleration, next_acceleration, dt: float) -> n
     if module is not None:
         try:
             return np.asarray(
-                module.verlet_velocity(velocities, acceleration, next_acceleration, dt),
+                module.verlet_velocity(velocities, acceleration, next_acceleration, dt), #type: ignore
                 dtype=float,
             )
         except (TypeError, ValueError):
@@ -230,7 +230,7 @@ def verlet_update(positions, velocities, acceleration, next_acceleration, dt: fl
     module = _rust_module()
     if module is not None:
         try:
-            new_x, new_v = module.verlet_update(
+            new_x, new_v = module.verlet_update( #type: ignore
                 positions, velocities, acceleration, next_acceleration, dt
             )
             return np.asarray(new_x, dtype=float), np.asarray(new_v, dtype=float)

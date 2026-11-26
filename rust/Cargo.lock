@@ -300,7 +300,7 @@ dependencies = [
 
 [[package]]
 name = "quantar-kernels"
-version = "1.2.2"
+version = "1.2.3"
 dependencies = [
  "num-complex",
  "numpy",

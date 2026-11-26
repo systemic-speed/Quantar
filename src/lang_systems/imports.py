@@ -22,7 +22,7 @@ import tokenize
 from importlib import import_module
 from pathlib import Path
 from types import ModuleType
-from typing import Iterator
+from typing import Iterator, Sequence
 
 from lang_systems import ast_builder, runtime
 
@@ -97,6 +97,15 @@ def _iter_import_statements(source: str) -> Iterator[ast.Import | ast.ImportFrom
             continue
         if isinstance(statement, (ast.Import, ast.ImportFrom)):
             yield statement
+
+
+def iter_import_statements(source: str) -> Iterator[ast.Import | ast.ImportFrom]:
+    """Public form of the raw-source import scanner.
+
+    Compilers and freezers can use this to discover ``.qtr`` dependencies
+    without parsing Quantar-specific syntax.
+    """
+    yield from _iter_import_statements(source)
 
 
 def resolve_import_name(statement: ast.ImportFrom, package: str | None = None) -> str:
@@ -244,6 +253,144 @@ def import_hook_installed() -> bool:
     return any(isinstance(finder, QuantarFinder) for finder in sys.meta_path)
 
 
+def find_qtr_module(
+    module_name: str,
+    search_paths: Sequence[str | Path],
+) -> Path | None:
+    """Return the ``.qtr`` file for an absolute module name, if it exists."""
+    parts = module_name.split(".")
+    for entry in search_paths:
+        base = Path(entry).resolve()
+        module_path = base.joinpath(*parts).with_suffix(".qtr")
+        if module_path.is_file():
+            return module_path
+        package_init = base.joinpath(*parts, "__init__.qtr")
+        if package_init.is_file():
+            return package_init
+    return None
+
+
+def _module_name_for(path: Path, roots: Sequence[Path]) -> str:
+    """Derive a dotted module name from a file and its search roots.
+
+    When several roots match, the one giving the longest name wins. Otherwise a
+    nested entry point could be mistaken for a top-level module simply because
+    its own directory was added as a search root.
+    """
+    resolved = path.resolve()
+    best: list[str] = []
+    for root in roots:
+        try:
+            relative = resolved.relative_to(root)
+        except ValueError:
+            continue
+        parts = list(relative.with_suffix("").parts)
+        if parts and parts[-1] == "__init__":
+            parts.pop()
+        if parts and len(parts) > len(best):
+            best = parts
+    return ".".join(best) if best else path.stem
+
+
+def lower_qtr_tree(
+    source: str | Path,
+    destination: str | Path,
+    *,
+    search_paths: Sequence[str | Path] = (),
+) -> tuple[Path, list[Path]]:
+    """Lower a program and its local ``.qtr`` imports into Python files.
+
+    ``source`` may be a ``.qtr`` program or an already-lowered ``.py`` file.
+    Import statements are scanned from raw source, resolved against
+    ``search_paths`` (the source directory is always included), and each
+    discovered ``.qtr`` module is lowered with the same pipeline as ``qtr -c``.
+    Package structure and ``__init__.py`` files are preserved so the resulting
+    tree is importable by a freezer without the runtime import hook.
+
+    Returns ``(entry_point, all_lowered_files)``.
+    """
+    # Imported lazily to keep this module free of a circular dependency.
+    from lang_systems.runner import qtr_runner
+
+    source_path = Path(source).resolve()
+    dest_root = Path(destination).resolve()
+    roots = [Path(entry).resolve() for entry in search_paths]
+    # Walk above an entry point that lives in a package so ``from .x import y``
+    # resolves to ``pkg.x`` rather than losing the ``pkg`` prefix.
+    package_root = source_path.parent
+    while (
+        (package_root / "__init__.qtr").is_file()
+        or (package_root / "__init__.py").is_file()
+    ):
+        package_root = package_root.parent
+    for root in (package_root, source_path.parent):
+        if root not in roots:
+            roots.append(root)
+
+    lowered: list[Path] = []
+    seen: set[Path] = set()
+    pending = [source_path]
+
+    while pending:
+        current = pending.pop(0)
+        if current in seen:
+            continue
+        seen.add(current)
+
+        module_name = _module_name_for(current, roots)
+        parts = module_name.split(".") if module_name else [current.stem]
+        if current.name == "__init__.qtr":
+            target = dest_root.joinpath(*parts, "__init__.py")
+        else:
+            target = dest_root.joinpath(*parts).with_suffix(".py")
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        if current.suffix == ".qtr":
+            qtr_runner(current, target)
+        elif current != target:
+            target.write_text(current.read_text(encoding="utf-8"), encoding="utf-8")
+        lowered.append(target)
+
+        text = current.read_text(encoding="utf-8")
+        package = module_name if current.name == "__init__.qtr" else (
+            module_name.rpartition(".")[0] if module_name else None
+        )
+        candidates: list[str] = []
+        for statement in iter_import_statements(text):
+            if isinstance(statement, ast.Import):
+                candidates.extend(alias.name for alias in statement.names)
+                continue
+            base = resolve_import_name(statement, package)
+            if not base:
+                continue
+            candidates.append(base)
+            for alias in statement.names:
+                if alias.name != "*":
+                    candidates.append(f"{base}.{alias.name}")
+
+        # `import pkg.module` also needs `pkg/__init__.qtr` when present.
+        for candidate in tuple(candidates):
+            parts = candidate.split(".")
+            candidates.extend(
+                ".".join(parts[:depth]) for depth in range(1, len(parts))
+            )
+
+        for candidate in candidates:
+            found = find_qtr_module(candidate, roots)
+            if found is None or found in seen:
+                continue
+            pending.append(found)
+            # Make intermediate packages importable even without __init__.qtr.
+            module_parts = candidate.split(".")
+            for depth in range(1, len(module_parts)):
+                init = dest_root.joinpath(*module_parts[:depth], "__init__.py")
+                init.parent.mkdir(parents=True, exist_ok=True)
+                if not init.exists():
+                    init.write_text("", encoding="utf-8")
+
+    return lowered[0], lowered
+
+
 __all__ = [
     "QuantarFinder",
     "QuantarLoader",
@@ -252,4 +399,7 @@ __all__ = [
     "import_hook_installed",
     "preload_imports",
     "resolve_import_name",
+    "iter_import_statements",
+    "find_qtr_module",
+    "lower_qtr_tree",
 ]

@@ -25,6 +25,7 @@ dependencies = [
     "numba",
     "openqasm3[parser]",
     "pegen>=0.3.0",
+    "pyinstaller",
 ]
 
 [project.urls]
