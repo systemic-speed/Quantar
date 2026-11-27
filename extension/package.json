@@ -2,7 +2,7 @@
   "name": "quantar-lang",
   "displayName": "Quantar Language Support",
   "description": "Syntax and language-server support for Quantar files",
-  "version": "1.0.1",
+  "version": "1.2.0",
   "publisher": "Gauthamrgb",
   "author": "Gautham_rgb",
   "license": "MIT",
@@ -35,6 +35,12 @@
     "publish": "npm run bundle && npx @vscode/vsce publish --no-dependencies"
   },
   "contributes": {
+    "commands": [
+      {
+        "command": "quantar.check",
+        "title": "Quantar: Check Program"
+      }
+    ],
     "configuration": {
       "title": "Quantar",
       "properties": {

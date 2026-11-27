@@ -2,13 +2,20 @@ const path = require("path");
 const fs = require("fs");
 const vscode = require("vscode");
 const crypto = require("crypto");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
 const { LanguageClient } = require("vscode-languageclient/node");
+
+const execFileAsync = promisify(execFile);
 
 let client;
 let clientStartPromise;
 let extensionContext;
 let pylanceActivation = Promise.resolve(false);
 let mirrorSessionId;
+let pythonRuntime;
+let checkDiagnostics;
+const checkedDiagnosticUris = new Set();
 const pythonMirrors = new Map();
 let outputChannel;
 
@@ -66,6 +73,19 @@ async function resolvePython(projectRoot, isSourceCheckout) {
     return {
         command: process.platform === "win32" ? "python" : "python3",
         args: [],
+    };
+}
+
+function quantarPythonEnvironment(projectRoot, isSourceCheckout) {
+    const sourceRoot = path.join(projectRoot, "src");
+    return {
+        ...process.env,
+        PYTHONPATH: [
+            ...(isSourceCheckout ? [sourceRoot] : []),
+            process.env.PYTHONPATH,
+        ]
+            .filter(Boolean)
+            .join(path.delimiter),
     };
 }
 
@@ -317,6 +337,95 @@ function registerPythonLanguageFeatures(context) {
     );
 }
 
+function parseCheckErrors(stderr) {
+    const errors = [];
+    for (const rawLine of stderr.split(/\r?\n/)) {
+        const line = rawLine.trim();
+        if (!line.startsWith("[CHECK] ERROR ")) continue;
+        const detail = line.slice("[CHECK] ERROR ".length);
+        const separator = detail.lastIndexOf(": ");
+        const location = separator === -1 ? detail : detail.slice(0, separator);
+        const message = separator === -1 ? "" : detail.slice(separator + 2);
+        const match = location.match(/^(.*):(\d+)$/);
+        errors.push({
+            fsPath: match ? match[1] : location,
+            line: match ? Number(match[2]) : 1,
+            message,
+        });
+    }
+    return errors;
+}
+
+function clearCheckDiagnostics() {
+    if (!checkDiagnostics) return;
+    for (const uri of checkedDiagnosticUris) {
+        checkDiagnostics.delete(uri);
+    }
+    checkedDiagnosticUris.clear();
+}
+
+async function publishCheckErrors(errors) {
+    clearCheckDiagnostics();
+    if (!checkDiagnostics) return;
+    for (const error of errors) {
+        const uri = vscode.Uri.file(path.resolve(error.fsPath));
+        const line = Math.max(0, error.line - 1);
+        const range = new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, 0));
+        const diagnostic = new vscode.Diagnostic(
+            range,
+            error.message || "Quantar check error",
+            vscode.DiagnosticSeverity.Error,
+        );
+        diagnostic.source = "qtr check";
+        checkDiagnostics.set(uri, [...(checkDiagnostics.get(uri) || []), diagnostic]);
+        checkedDiagnosticUris.add(uri);
+    }
+}
+
+async function checkActiveDocument() {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || editor.document.languageId !== "quantar") {
+        void vscode.window.showWarningMessage("Open a Quantar file to run qtr check.");
+        return;
+    }
+    if (editor.document.isUntitled || editor.document.isDirty) {
+        void vscode.window.showWarningMessage("Save the Quantar file before running qtr check.");
+        return;
+    }
+    if (!pythonRuntime) {
+        void vscode.window.showErrorMessage("Quantar is not ready yet. Try again in a moment.");
+        return;
+    }
+
+    const file = editor.document.uri.fsPath;
+    const workspaceFolder = vscode.workspace.getWorkspaceFolder(editor.document.uri);
+    const cwd = workspaceFolder ? workspaceFolder.uri.fsPath : path.dirname(file);
+    const args = [...pythonRuntime.args, "-m", "lang_systems.runner", "check", file];
+    const options = {
+        cwd,
+        env: quantarPythonEnvironment(pythonRuntime.projectRoot, pythonRuntime.isSourceCheckout),
+        windowsHide: true,
+        maxBuffer: 10 * 1024 * 1024,
+    };
+
+    try {
+        const { stdout, stderr } = await execFileAsync(pythonRuntime.command, args, options);
+        clearCheckDiagnostics();
+        const summary = (stdout || stderr || "").trim();
+        void vscode.window.showInformationMessage(summary || "Quantar check passed.");
+    } catch (error) {
+        const stderr = error.stderr ? String(error.stderr) : "";
+        const stdout = error.stdout ? String(error.stdout) : "";
+        const errors = parseCheckErrors(stderr);
+        await publishCheckErrors(errors);
+        if (errors.length === 0) {
+            const detail = (stderr || stdout || error.message || "").trim();
+            outputChannel?.appendLine(`qtr check failed: ${detail}`);
+            void vscode.window.showErrorMessage("Quantar check failed. See the Quantar output channel for details.");
+        }
+    }
+}
+
 /** @param {vscode.ExtensionContext} context */
 async function activate(context) {
     extensionContext = context;
@@ -327,28 +436,22 @@ async function activate(context) {
         path.join(sourceRoot, "lang_systems", "lsp"),
     );
 
-    const { command, args } = await resolvePython(projectRoot, isSourceCheckout);
+    const runtime = await resolvePython(projectRoot, isSourceCheckout);
+    pythonRuntime = { ...runtime, projectRoot, isSourceCheckout };
 
     const serverOptions = {
-        command,
-        args: [...args, "-u", "-m", "lang_systems.lsp"],
+        command: runtime.command,
+        args: [...runtime.args, "-u", "-m", "lang_systems.lsp"],
         options: {
             cwd: isSourceCheckout
                 ? projectRoot
                 : vscode.workspace.workspaceFolders?.[0]?.uri.fsPath ||
                   context.extensionPath,
-            env: {
-                ...process.env,
-                PYTHONPATH: [
-                    ...(isSourceCheckout ? [sourceRoot] : []),
-                    process.env.PYTHONPATH,
-                ]
-                    .filter(Boolean)
-                    .join(path.delimiter),
-            },
+            env: quantarPythonEnvironment(projectRoot, isSourceCheckout),
         },
     };
 
+    checkDiagnostics = vscode.languages.createDiagnosticCollection("quantar-check");
     outputChannel = vscode.window.createOutputChannel("Quantar");
     client = new LanguageClient(
         "quantarLanguageServer",
@@ -359,7 +462,12 @@ async function activate(context) {
             outputChannel,
         },
     );
-    context.subscriptions.push(client, outputChannel);
+    context.subscriptions.push(
+        client,
+        outputChannel,
+        checkDiagnostics,
+        vscode.commands.registerCommand("quantar.check", checkActiveDocument),
+    );
     registerPythonLanguageFeatures(context);
     clientStartPromise = client.start();
     clientStartPromise.catch((error) => {
@@ -377,6 +485,7 @@ async function activate(context) {
 }
 
 async function deactivate() {
+    clearCheckDiagnostics();
     await client?.stop();
     const directories = new Set();
     await Promise.all(

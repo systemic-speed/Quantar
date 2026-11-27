@@ -48,7 +48,7 @@ def _iter_import_chunks(source: str) -> Iterator[str]:
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (IndentationError, tokenize.TokenError):
-        return
+        return iter(())
 
     starts = _line_starts(source)
     chunks: list[str] = []

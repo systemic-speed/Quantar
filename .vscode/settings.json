@@ -2,11 +2,5 @@
     "python.REPL.enableREPLSmartSend": false,
     "python.analysis.extraPaths": ["src", "C:/Users/kaart/AppData/Local/Programs/Python/Python314/Lib/site-packages"],
     "python.analysis.autoSearchPaths": true,
-    "python-envs.pythonProjects": [
-        {
-            "path": ".",
-            "envManager": "ms-python.python:system",
-            "packageManager": "ms-python.python:pip"
-        }
-    ]
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }

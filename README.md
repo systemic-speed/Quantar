@@ -39,6 +39,25 @@ also install the VS code extension [here](https://marketplace.visualstudio.com/i
 ```bash
 ext install Gauthamrgb.quantar-lang
 ```
+## Starting a project
+
+```bash
+qtr new my-project
+cd my-project
+qtr run
+qtr check
+qtr compile
+```
+
+`qtr new NAME` creates `NAME/` with `pyproject.toml`, `src/main.qtr`, and
+`README.md`. Run `qtr init` instead to scaffold the current directory.
+
+The generated `pyproject.toml` has `quantar` in `dependencies` and a
+`[tool.quantar]` table with `entry`, `output`, `compile-to`, `mode`, `rust`, and
+`jobs`. Plain `qtr run`, `qtr check`, and `qtr compile` read those settings, so
+you do not need to repeat the filename. Command-line options override them, and
+`--rust/--no-rust` overrides `[tool.quantar].rust`.
+
 ## Running Quantar
 
 ```bash

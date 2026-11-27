@@ -7,6 +7,8 @@ VS Code support for Quantar's `.qtr` and `.quantar` files.
 - Python syntax highlighting with Quantar's symbolic operators highlighted in
   a consistent cyan accent.
 - Parser diagnostics from Quantar's language server.
+- `Quantar: Check Program` runs cargo-style `qtr check` on the active file and
+  its local imports, then shows aggregated errors as diagnostics.
 - Semantic highlighting for operators registered by the project or user code.
 - Python-language hover, completions, definitions, references, type definitions,
   implementations, and signature help through Pylance.

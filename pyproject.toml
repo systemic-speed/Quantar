@@ -26,6 +26,8 @@ dependencies = [
     "openqasm3[parser]",
     "pegen>=0.3.0",
     "pyinstaller",
+    "typer>=0.29.3",
+    "rich"
 ]
 
 [project.urls]
