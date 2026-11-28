@@ -36,7 +36,7 @@ are resolved on first access.
 
 | Area | Names |
 | --- | --- |
-| Language | `parse`, `parse_ast`, `build_ast`, `lower_ast`, `compile_ast`, `QuantumOp`, `load_operators`, `install_import_hook`, `preload_imports` |
+| Language | `parse`, `parse_ast`, `build_ast`, `lower_ast`, `compile_ast`, `QuantumOp`, `OperatorRegistry`, `load_operators`, `install_import_hook`, `preload_imports` |
 | Simulator | `QuantumComputer`, `Qubit`, `Gate`, `CompositeGate`, `CircuitGate`, `named_gate`, `crk`, `to_openqasm3` |
 | Backend | `use_backend`, `set_backend`, `get_backend`, `available_backends`, `load_rust_backend`, `build_rust_backend`, `is_free_threaded` |
 | Seeding | `set_seed`, `get_seed`, `make_pcg64` |
@@ -181,13 +181,44 @@ kernels, including their NumPy twins, is in `stl.physics_algs.kernels`.
 ```python
 from lang_systems import (
     parse, parse_ast, QuantumOp, OperatorCollector,
-    load_operators, install_import_hook, preload_imports,
+    OperatorRegistry, load_operators, install_import_hook, preload_imports,
 )
 ```
 
-`qtr program.qtr` runs a Quantar program, and `qtr program.qtr --compile out.py`
-compiles it to ordinary Python. During development use
-`python -m lang_systems.runner program.qtr`.
+`OperatorRegistry` provides isolated operator decorators for tests or explicit
+imports; the module-level `operator` decorator continues to use the global
+registry. Both support bracket/delimiter patterns, where each `{}` is one
+operand slot:
+
+```python
+from lang_systems import OperatorRegistry
+from lang_systems.operators import operator
+
+@operator.bracket("|{}>")
+def ket(value):
+    return ("ket", value)
+
+@operator.bracket("<{}|{}>")
+def inner(bra, ket):
+    return bra, ket
+
+ops = OperatorRegistry()
+
+@ops.bracket("<{}|")
+def bra(value):
+    return ("bra", value)
+```
+
+The examples above parse as `|x>`, `<x|`, and `<a|b>`; multi-slot patterns such
+as `"|{}><{}|"` parse as `|a><b|`. They lower to `QuantumOp` nodes with
+`kind="bracket"`, one operand per slot. `register_bracket()`,
+`list_bracket_operators()`, `is_bracket_operator()`, and `get_bracket_parts()`
+are available for explicit registration and introspection. Literal symbolic
+infix tokens (`x |> y`) are still registered with `@operator.binary("|>")`.
+
+`qtr program.qtr` runs a Quantar program, and
+`qtr compile program.qtr out.py` compiles it to ordinary Python. During
+development use `python -m lang_systems.runner program.qtr`.
 
 ## Deterministic sampling
 
@@ -223,8 +254,8 @@ Details:
 | Interpreter | Source build | Wheel tag |
 | --- | --- | --- |
 | CPython 3.12–3.14, GIL enabled | `abi3` (`abi3-py312`) | `cp312-abi3-*` |
-| CPython 3.14t | version-specific `cp314t` | `cp314t-*` |
-| CPython 3.15/3.15t+ | `abi3t` (`abi3t-py315`) | `abi3t-*` |
+| CPython 3.14t | version-specific `cp314-cp314t` | `cp314-cp314t-*` |
+| CPython 3.15/3.15t+ | `abi3t` (`abi3t-py315`) | `cp315-abi3.abi3t-*` |
 
 ```powershell
 uv python install 3.14t

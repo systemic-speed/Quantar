@@ -30,6 +30,7 @@
   "main": "./dist/extension.js",
   "scripts": {
     "bundle": "esbuild ./extension.js --bundle --platform=node --external:vscode --format=cjs --outfile=dist/extension.js",
+    "prepare": "npm run bundle",
     "vscode:prepublish": "npm run bundle",
     "package": "npm run bundle && npx @vscode/vsce package --no-dependencies",
     "publish": "npm run bundle && npx @vscode/vsce publish --no-dependencies"

@@ -19,7 +19,7 @@ import tokenize
 
 from . import ast_builder
 from .imports import iter_import_statements, resolve_import_name
-from .operators import operator as operator_decorator
+from .operators import register_declared_operators
 
 _SOURCE_SUFFIXES = {".qtr", ".py"}
 
@@ -151,8 +151,12 @@ def _resolve_required_module(module_name: str, path: Path, roots: Sequence[Path]
     if local_path is not None:
         return local_path
 
-    top_level_local = _local_module_path(module_name.split(".")[0], roots)
-    if top_level_local is not None or not _module_outside_local_exists(module_name):
+    top_level = module_name.split(".")[0]
+    if _local_module_path(top_level, roots) is not None:
+        # A local package must contain the requested submodule; a top-level
+        # match alone would hide `import pkg.missing` in a local `pkg`.
+        issues.append(CheckIssue(path, f"cannot resolve import {module_name!r}", line))
+    elif not _module_outside_local_exists(module_name):
         issues.append(CheckIssue(path, f"cannot resolve import {module_name!r}", line))
     return None
 
@@ -289,52 +293,31 @@ def _cache_source(source_name: str, source_code: str) -> None:
     linecache.cache[source_name] = (len(source_code), None, source_lines, source_name)
 
 
-def _operator_declaration(decorator: ast.expr) -> tuple[str | None, str]:
-    """Return the operator name and kind from an ``@operator`` decorator."""
-    if not isinstance(decorator, ast.Call):
-        return None, "callable"
-
-    name: str | None = None
-    kind = "callable"
-    function = decorator.func
-
-    if isinstance(function, ast.Attribute) and isinstance(function.value, ast.Name) and function.value.id == "operator":
-        kind = function.attr
-    elif isinstance(function, ast.Name) and function.id == "operator":
-        for keyword in decorator.keywords:
-            if keyword.arg == "name" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
-                name = keyword.value.value
-            elif keyword.arg == "kind" and isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
-                kind = keyword.value.value
-
-    if name is None and decorator.args and isinstance(decorator.args[0], ast.Constant) and isinstance(decorator.args[0].value, str):
-        name = decorator.args[0].value
-    return name, kind
-
-
-def _register_placeholder_operator(name: str, kind: str) -> None:
-    """Register a parse-only stand-in for an operator declared in local source."""
-    if kind in {"matrix", "gate"}:
-        def placeholder(): #type: ignore
-            import numpy as np
-            return np.zeros((2, 2), dtype=complex)
-    else:
-        def placeholder(*args, **kwargs):
-            return None
-    operator_decorator(name, kind)(placeholder) #type: ignore
-
-
 def _register_declared_operators(source: str) -> None:
     """Register operators declared in source without executing the module."""
-    try:
-        tree = ast.parse(source)
-    except SyntaxError:
-        return
-    for node in ast.walk(tree):
-        for decorator in getattr(node, "decorator_list", ()):
-            name, kind = _operator_declaration(decorator)
-            if name:
-                _register_placeholder_operator(name, kind)
+    register_declared_operators(source)
+
+
+def register_operators_for_sources(sources: Sequence[Path]) -> None:
+    """Register operators declared by a project's reachable source files."""
+    for source_path in sources:
+        try:
+            _register_declared_operators(source_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+        except ValueError as error:
+            # Invalid declarations are surfaced by check_project(); lowering
+            # only needs the valid names that follow them.
+            continue
+
+
+def register_operators_for_project(entry: str | Path) -> tuple[Path, ...]:
+    """Register local operator declarations without importing or executing code."""
+    path = Path(entry).resolve()
+    issues: list[CheckIssue] = []
+    sources = _discover_sources(path, _check_roots(path), issues)
+    register_operators_for_sources(sources)
+    return tuple(sources)
 
 
 def _discover_sources(entry: Path, roots: Sequence[Path], issues: list[CheckIssue]) -> list[Path]:
@@ -383,9 +366,11 @@ def check_project(entry: str | Path) -> CheckReport:
     # Operator decorators have to be known before Quantar parses custom syntax.
     for source_path in sources:
         try:
-            _register_declared_operators(source_path.read_text(encoding="utf-8"))
+            register_declared_operators(source_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError):
             continue
+        except ValueError as error:
+            issues.append(CheckIssue(source_path, str(error)))
 
     for source_path in sources:
         try:
@@ -407,4 +392,6 @@ __all__ = [
     "CheckReport",
     "QuantarCheckError",
     "check_project",
+    "register_operators_for_project",
+    "register_operators_for_sources",
 ]

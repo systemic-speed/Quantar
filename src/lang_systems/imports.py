@@ -43,15 +43,15 @@ def _offset(position: tuple[int, int], starts: list[int], source: str) -> int:
     return starts[row - 1] + column
 
 
-def _iter_import_chunks(source: str) -> Iterator[str]:
-    """Yield complete import statements from raw (possibly Quantar) source."""
+def _iter_import_chunks(source: str) -> Iterator[tuple[str, int]]:
+    """Yield ``(statement, column)`` for raw (possibly Quantar) source."""
     try:
         tokens = list(tokenize.generate_tokens(io.StringIO(source).readline))
     except (IndentationError, tokenize.TokenError):
         return iter(())
 
     starts = _line_starts(source)
-    chunks: list[str] = []
+    chunks: list[tuple[str, int]] = []
     first: tokenize.TokenInfo | None = None
     last: tokenize.TokenInfo | None = None
     depth = 0
@@ -59,7 +59,8 @@ def _iter_import_chunks(source: str) -> Iterator[str]:
     def emit() -> None:
         nonlocal first, last
         if first is not None and last is not None:
-            chunks.append(source[_offset(first.start, starts, source): _offset(last.end, starts, source)])
+            chunk = source[_offset(first.start, starts, source): _offset(last.end, starts, source)]
+            chunks.append((chunk, first.start[1]))
         first = None
         last = None
 
@@ -90,7 +91,12 @@ def _iter_import_chunks(source: str) -> Iterator[str]:
 
 
 def _iter_import_statements(source: str) -> Iterator[ast.Import | ast.ImportFrom]:
-    for chunk in _iter_import_chunks(source):
+    for chunk, column in _iter_import_chunks(source):
+        # Indented imports are guarded or function-local. Running them while
+        # preparsing would execute optional/fallback code the program may never
+        # take, so only top-level imports are candidates for preloading.
+        if column != 0:
+            continue
         try:
             statement = ast.parse(chunk).body[0]
         except (IndexError, SyntaxError):
@@ -102,8 +108,9 @@ def _iter_import_statements(source: str) -> Iterator[ast.Import | ast.ImportFrom
 def iter_import_statements(source: str) -> Iterator[ast.Import | ast.ImportFrom]:
     """Public form of the raw-source import scanner.
 
-    Compilers and freezers can use this to discover ``.qtr`` dependencies
-    without parsing Quantar-specific syntax.
+    Compilers and freezers can use this to discover top-level, unguarded
+    ``.qtr`` dependencies without parsing Quantar-specific syntax. Imports
+    inside ``try``/``if`` blocks or functions are intentionally ignored.
     """
     yield from _iter_import_statements(source)
 
@@ -273,12 +280,11 @@ def find_qtr_module(
 def _module_name_for(path: Path, roots: Sequence[Path]) -> str:
     """Derive a dotted module name from a file and its search roots.
 
-    When several roots match, the one giving the longest name wins. Otherwise a
-    nested entry point could be mistaken for a top-level module simply because
-    its own directory was added as a search root.
+    Roots are ordered by specificity: the package root comes first, followed by
+    explicit search paths. Using the first match avoids turning ``src/main.qtr``
+    into ``src.main`` when both ``src`` and the repository root are on the path.
     """
     resolved = path.resolve()
-    best: list[str] = []
     for root in roots:
         try:
             relative = resolved.relative_to(root)
@@ -287,9 +293,9 @@ def _module_name_for(path: Path, roots: Sequence[Path]) -> str:
         parts = list(relative.with_suffix("").parts)
         if parts and parts[-1] == "__init__":
             parts.pop()
-        if parts and len(parts) > len(best):
-            best = parts
-    return ".".join(best) if best else path.stem
+        if parts:
+            return ".".join(parts)
+    return path.stem
 
 
 def lower_qtr_tree(
@@ -323,7 +329,9 @@ def lower_qtr_tree(
         or (package_root / "__init__.py").is_file()
     ):
         package_root = package_root.parent
-    for root in (package_root, source_path.parent):
+    ordered_roots = [package_root, *roots, source_path.parent]
+    roots = []
+    for root in ordered_roots:
         if root not in roots:
             roots.append(root)
 

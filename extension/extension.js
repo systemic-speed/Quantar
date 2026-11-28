@@ -343,14 +343,18 @@ function parseCheckErrors(stderr) {
         const line = rawLine.trim();
         if (!line.startsWith("[CHECK] ERROR ")) continue;
         const detail = line.slice("[CHECK] ERROR ".length);
-        const separator = detail.lastIndexOf(": ");
-        const location = separator === -1 ? detail : detail.slice(0, separator);
-        const message = separator === -1 ? "" : detail.slice(separator + 2);
-        const match = location.match(/^(.*):(\d+)$/);
+        // Checker messages are `path:line: message`, but `message` itself may
+        // contain `: `. Match the whole detail in one anchored expression.
+        const match = detail.match(/^(.*):(\d+):\s*(.*)$/);
+        if (match) {
+            errors.push({ fsPath: match[1], line: Number(match[2]), message: match[3] });
+            continue;
+        }
+        const bare = detail.match(/^(.+?):\s*(.*)$/);
         errors.push({
-            fsPath: match ? match[1] : location,
-            line: match ? Number(match[2]) : 1,
-            message,
+            fsPath: bare ? bare[1] : detail,
+            line: 1,
+            message: bare ? bare[2] : detail,
         });
     }
     return errors;
@@ -370,7 +374,15 @@ async function publishCheckErrors(errors) {
     for (const error of errors) {
         const uri = vscode.Uri.file(path.resolve(error.fsPath));
         const line = Math.max(0, error.line - 1);
-        const range = new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, 0));
+        let range = new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, 0));
+        try {
+            const document = await vscode.workspace.openTextDocument(uri);
+            if (line < document.lineCount) {
+                range = document.lineAt(line).range;
+            }
+        } catch {
+            // Keep the zero-width range when the file cannot be opened.
+        }
         const diagnostic = new vscode.Diagnostic(
             range,
             error.message || "Quantar check error",

@@ -8,6 +8,8 @@ provides that function and a ready-made globals dictionary for ``exec``.
 from __future__ import annotations
 
 from typing import Any
+import importlib
+import sys
 
 from lang_systems.operators import (
     apply_operator,
@@ -17,9 +19,13 @@ from lang_systems.operators import (
 
 
 def _load_quantum_operators() -> None:
-    """Import the quantum gate registrations on first use."""
+    """Import or re-import the quantum gate registrations when needed."""
+    existing = sys.modules.get("quantum.gate_matrix")
     try:
-        import quantum.gate_matrix  # noqa: F401
+        if existing is not None:
+            importlib.reload(existing)
+        else:
+            import quantum.gate_matrix  # noqa: F401
     except ImportError:
         return
 

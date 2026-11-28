@@ -10,6 +10,7 @@
 #
 #   symbolic    a  <->  b        matched by QUANTUM_OP   (lang_systems/quantar_tokens.py)
 #   identifier  a  CNOT  b       matched by QUANTUM_NAME (any registered NAME)
+#   bracket     |x>, <x|b>       matched by QUANTUM_BRACKET (one merged token)
 #
 # Precedence: custom operators bind *between* `comparison` and `bitwise_or`,
 # on both sides of a comparison. lang_systems.pegen_gram_gen rewires
@@ -20,8 +21,12 @@
 
 quantum_expr[expr_ty]:
     | a=quantum_expr quantum_operator b=bitwise_or
+    | quantum_bracket
     | bitwise_or
 
 quantum_operator[expr_ty]:
     | QUANTUM_OP
     | QUANTUM_NAME
+
+quantum_bracket[expr_ty]:
+    | QUANTUM_BRACKET

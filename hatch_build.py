@@ -3,8 +3,9 @@
 Quantar's parser is generated from the vendored CPython grammar
 (``Grammar/python.gram``) plus the operator overlay
 (``src/lang_systems/quantar.gram``); see ``src/lang_systems/pegen_gram_gen.py``
-for the details and the pegen-0.3.0 workarounds. This hook ensures the base
-grammar is present, then runs the build.
+for the details and the pegen-0.3.0 workarounds. This hook also syncs the Cargo
+version from ``src/lang_systems/__init__.py`` so there is only one version to
+edit before each build.
 """
 
 import os
@@ -15,6 +16,10 @@ from pathlib import Path
 from hatchling.builders.hooks.plugin.interface import BuildHookInterface
 
 ROOT = Path(__file__).resolve().parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from version_sync import sync_cargo_version
 
 _TRUTHY = {"1", "true", "yes", "on"}
 
@@ -30,9 +35,15 @@ class PegenBuildHook(BuildHookInterface):
     PLUGIN_NAME = "pegen"
 
     def initialize(self, version, build_data):
+        sync_cargo_version()
         self._configure_rust_output()
         self._fetch_python_grammar()
         self._generate_parser()
+
+    def _debug(self, message: str) -> None:
+        """Print build detail only when the caller asks for it."""
+        if _enabled("QUANTAR_VERBOSE_BUILD"):
+            print(message)
 
     def _configure_rust_output(self) -> None:
         """Keep normal builds quiet; make detail opt-in.
@@ -61,7 +72,7 @@ class PegenBuildHook(BuildHookInterface):
         target = grammar_dir / "python.gram"
 
         if target.exists() and target.stat().st_size > 0:
-            print(f"Using existing {target}")
+            self._debug(f"Using existing {target}")
             return
 
         version = f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -69,15 +80,16 @@ class PegenBuildHook(BuildHookInterface):
         for ref in (version, "main"):
             url = f"{base}/{ref}/Grammar/python.gram"
             temporary = target.with_suffix(".gram.tmp")
-            print(f"Fetching CPython grammar from {url}")
+            self._debug(f"Fetching CPython grammar from {url}")
             try:
-                urllib.request.urlretrieve(url, temporary)
+                with urllib.request.urlopen(url, timeout=15) as response:
+                    temporary.write_bytes(response.read())
                 temporary.replace(target)  # atomic: never leave a partial file
-                print(f"Downloaded {target} ({target.stat().st_size} bytes)")
+                self._debug(f"Downloaded {target} ({target.stat().st_size} bytes)")
                 return
             except Exception as error:  # noqa: BLE001
                 temporary.unlink(missing_ok=True)
-                print(f"Could not fetch {url}: {error}", file=sys.stderr)
+                self._debug(f"Could not fetch {url}: {error}")
 
         raise RuntimeError(
             "Could not download Grammar/python.gram and no vendored copy exists."

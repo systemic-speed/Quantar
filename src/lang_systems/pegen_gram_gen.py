@@ -13,6 +13,7 @@ with::
 or let the build do it (see ``hatch_build.py``).
 """
 
+import os
 import sys
 from pathlib import Path
 
@@ -31,6 +32,7 @@ OUTPUT_PARSER = PACKAGE_ROOT / "quantar_parser.py"
 EXTRA_TOKENS = {
     "QUANTUM_OP",
     "QUANTUM_NAME",
+    "QUANTUM_BRACKET",
     "TSTRING_START",
     "TSTRING_MIDDLE",
     "TSTRING_END",
@@ -161,7 +163,8 @@ def build() -> None:
         generator = PythonParserGenerator(grammar, out, tokens=tokens)
         generator.generate(str(MERGED_GRAMMAR))
 
-    print(f"Generated {OUTPUT_PARSER.relative_to(ROOT)} ({len(grammar.rules)} rules)")
+    if os.environ.get("QUANTAR_VERBOSE_BUILD", "").strip().lower() in {"1", "true", "yes", "on"}:
+        print(f"Generated {OUTPUT_PARSER.relative_to(ROOT)} ({len(grammar.rules)} rules)")
 
 
 if __name__ == "__main__":

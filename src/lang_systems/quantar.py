@@ -32,6 +32,13 @@ class QuantarParser(GeneratedParser):  # type: ignore[misc]
             return self._tokenizer.getnext()
         return None
 
+    def QUANTUM_BRACKET(self):  # type: ignore[override]
+        """Match a delimiter expression such as ``|x>`` or ``<a|b>``."""
+        peeked = self._tokenizer.peek()
+        if peeked.type == token.OP and getattr(peeked, "_quantar_bracket", False):
+            return self._tokenizer.getnext()
+        return None
+
     def QUANTUM_NAME(self):  # type: ignore[override]
         """Match an identifier operator (e.g. ``CNOT``) known to the language."""
         peeked = self._tokenizer.peek()

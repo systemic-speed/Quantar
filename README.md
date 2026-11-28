@@ -67,7 +67,7 @@ qtr path/to/program.qtr
 Compile a file to ordinary Python instead of executing it:
 
 ```bash
-qtr path/to/program.qtr --compile path/to/program.py
+qtr compile path/to/program.qtr path/to/program.py
 ```
 
 During development, the same runner is available as a module:
@@ -137,6 +137,64 @@ def reverse(left, right):
     return right, left
 ```
 
+Bracket-style operators are registered as delimiter patterns: each `{}` marks
+where one operand appears in source.
+
+```python
+from lang_systems.operators import operator
+
+@operator.bracket("|{}>")
+def ket(value):
+    return ("ket", value)
+
+@operator.bracket("<{}|")
+def bra(value):
+    return ("bra", value)
+
+@operator.bracket("<{}|{}>")
+def inner(bra, ket):
+    return "inner", bra, ket
+
+@operator.bracket("|{}><{}|")
+def outer(bra, ket):
+    return "outer", bra, ket
+```
+
+They are then written with the operands inside the delimiters:
+
+```python
+a = |qubit>       # ket(qubit)
+b = <qubit|       # bra(qubit)
+c = <bra|ket>     # inner(bra, ket)
+d = |a><b|        # outer(a, b)
+```
+
+The resulting AST nodes are `QuantumOp` objects whose `operator` is the pattern,
+`operands` are the values from each slot, and `kind` is `"bracket"`. Ordinary
+Python `|`, `<`, and `>` expressions are unaffected. For a literal infix token
+such as `x |> y`, keep using `@operator.binary("|>")` instead.
+
+For an isolated set of operators (useful in tests, or to import only a few
+names), use `OperatorRegistry`:
+
+```python
+from lang_systems import OperatorRegistry
+
+ops = OperatorRegistry()
+
+@ops.binary("><")
+def reverse(left, right):
+    return right, left
+
+reverse = ops["><"]
+ops.apply("><", 1, 2)  # (2, 1)
+ops.import_global("h")  # copy specific global operators into ops
+
+@ops.bracket("<{}|{}>")
+def inner(bra, ket):
+    return bra, ket
+```
+
 If the operators live in another module, import that module before parsing:
 
 ```python
@@ -203,9 +261,9 @@ quantum.available_backends()        # e.g. ("python", "rust")
 
 The backend can also be chosen before startup with `QUANTAR_BACKEND=rust`. The
 bundled extension is built with PyO3's `abi3-py312` feature, so the same binary
-works on CPython 3.12+ and wheels are tagged `cp312-abi3-*`. In the source tree
-it is named `src/quantum/quantar_kernels.pyd`, with a copy kept in the root
-`kernels/` directory.
+works on CPython 3.12+ and wheels are tagged `cp312-abi3-*`. After a local
+build, the extension is placed at `src/quantum/quantar_kernels.pyd`, with a copy
+in the root `kernels/` directory; these files are build artifacts, not source.
 
 If that extension is missing or stale, Quantar automatically builds it locally
 when `cargo` and the `rust/` source tree are available:
@@ -253,8 +311,13 @@ The compiled extension exposes `quantum.quantar_kernels.set_seed()` /
 ### Build output
 
 Normal `uv build`, `python -m build`, and `pip install .` runs are quiet.
-Dependency deprecation warnings (for example `num-traits 0.2.19`'s deprecated
-`core::f32::NAN` constants) are suppressed because they come from dependencies:
+Deprecation warnings (for example `num-traits 0.2.19`'s deprecated
+`core::f32::NAN` constants) are suppressed during builds; set
+`QUANTAR_STRICT_RUST=1` to keep them visible.
+The only version to edit is `__version__` in `src/lang_systems/__init__.py`;
+`hatch_build.py` copies it into `rust/Cargo.toml` and `rust/Cargo.lock` before
+every build. Check consistency with `python version_sync.py --check` (or just
+run `uv build`, which syncs automatically):
 
 ```powershell
 $env:QUANTAR_VERBOSE_BUILD = "1"   # detailed maturin/cargo output
@@ -289,17 +352,18 @@ matrix is:
 | Interpreter | Extension built from source | Prebuilt wheel to publish |
 | --- | --- | --- |
 | CPython 3.12–3.14, GIL enabled | `abi3` (`abi3-py312`) | `cp312-abi3-*` |
-| CPython 3.14t, free-threaded | version-specific `cp314t` | `cp314t-*` |
-| CPython 3.15/3.15t and newer | `abi3t` (`abi3t-py315`) | `abi3t-*` |
+| CPython 3.14t, free-threaded | version-specific `cp314-cp314t` | `cp314-cp314t-*` |
+| CPython 3.15/3.15t and newer | `abi3t` (`abi3t-py315`) | `cp315-abi3.abi3t-*` |
 
 Important details:
 
 - The existing `cp312-abi3-*` wheel **cannot** be installed on a free-threaded
   interpreter; pip rejects it as unsupported. Install a free-threaded wheel or
   install from source with the free-threaded interpreter.
-- `python3.14t -m pip install .` compiles a `cp314t` extension automatically.
-- Python 3.15+ uses PEP 803's `abi3t` stable ABI, so one binary works with both
-  GIL-enabled and free-threaded interpreters.
+- `python3.14t -m pip install .` compiles a version-specific `cp314-cp314t`
+  extension automatically.
+- Python 3.15+ uses PEP 803's `abi3t` stable ABI, so one wheel tagged
+  `cp315-abi3.abi3t-*` works with both GIL-enabled and free-threaded interpreters.
 - PyO3 0.30 no longer supports CPython 3.13t; use 3.14t or newer.
 - The runtime loader detects `Py_GIL_DISABLED`, so local auto-builds never write
   a GIL-only `abi3` extension for a free-threaded interpreter.

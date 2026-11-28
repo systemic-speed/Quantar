@@ -31,17 +31,17 @@ _QUANTAR_ROOTS = ("quantar", "quantum", "stl")
 
 # Inserted into lowered entry points when ``--rust`` is requested. It must run
 # before the program imports ``quantum`` so the backend is selected at import
-# time, including inside the built executable.
-RUST_PRELUDE = """import os as _quantar_os
+# time, including inside the built executable. Failures are fatal: a Rust
+# binary must never quietly run on the NumPy backend.
+RUST_PRELUDE_SENTINEL = "# quantar-rust-prelude"
+RUST_PRELUDE = """# quantar-rust-prelude
+import os as _quantar_os
 _quantar_os.environ["QUANTAR_BACKEND"] = "rust"
-try:
-    from quantum import backend as _quantar_backend
-    _quantar_backend.set_backend("rust")
-    from stl.physics_algs import use_rust_physics as _quantar_use_rust_physics
-except ImportError:
-    pass
-else:
-    _quantar_use_rust_physics(True)
+from quantum import backend as _quantar_backend
+_quantar_backend.set_backend("rust")
+from stl.physics_algs import use_rust_physics as _quantar_use_rust_physics
+if _quantar_backend.get_backend() != "rust" or not _quantar_use_rust_physics(True):
+    raise RuntimeError("Quantar Rust backend is unavailable in this build")
 """
 
 
@@ -67,7 +67,7 @@ def rust_extension_status(*, prepare: bool = False) -> tuple[bool, str]:
 def _inject_prelude(entry: Path, prelude: str) -> None:
     """Insert ``prelude`` after any docstring and ``__future__`` imports."""
     source = entry.read_text(encoding="utf-8")
-    if "_quantar_os" in source:
+    if RUST_PRELUDE_SENTINEL in source.splitlines():
         return
     tree = ast.parse(source)
     lines = source.splitlines(keepends=True)
@@ -169,10 +169,10 @@ def _find_artifact(output_dir: Path, output_name: str, mode: str) -> Path:
     for candidate in (output_dir / f"{output_name}.exe", output_dir / output_name, output_dir / f"{output_name}.bin"):
         if candidate.is_file():
             return candidate
-    executables = [path for path in output_dir.iterdir() if path.is_file() and os.access(path, os.X_OK) and path.suffix not in {".py", ".pyi", ".spec"}]
-    if not executables:
-        raise FileNotFoundError(f"PyInstaller wrote no executable in {output_dir}")
-    return max(executables, key=lambda path: path.stat().st_mtime)
+    # Do not guess from unrelated files in the output directory. On Windows,
+    # os.access(X_OK) is true for nearly every file, so this can pick a stale
+    # binary when the expected artifact was not produced.
+    raise FileNotFoundError(f"PyInstaller wrote no executable named {output_name!r} in {output_dir}")
 
 
 def make_bin_for_file(filename: str | Path, compile_destination: str | Path = "./quantar_compile/bins", mode: Literal["onefile", "standalone"] = "standalone", jobs: int = 2, *, output_name: str | None = None, extra_args: Sequence[str] = (), build_dir: str | Path | None = None, rust: bool = False) -> Path:
@@ -219,7 +219,9 @@ def make_bin_for_file(filename: str | Path, compile_destination: str | Path = ".
                 build_args.append(f"--add-binary={detail}{os.pathsep}quantum")
             _inject_prelude(entry, RUST_PRELUDE)
 
-        build_paths = [lowered_root, _REPO_SRC, source.parent] if needs_quantar else [lowered_root, source.parent]
+        # Lowered files always import `lang_systems.imports` for the hook, so
+        # the source root is needed even for local-only Quantar programs.
+        build_paths = [lowered_root, _REPO_SRC, source.parent]
         command = pyinstaller_command(entry, output_dir, name, mode=mode, work_dir=work, paths=build_paths, hidden_imports=hidden_imports, extra_args=build_args)
         env = pyinstaller_env(*build_paths)
         subprocess.run(command, check=True, cwd=work, env=env)

@@ -158,7 +158,7 @@ class PyInstallerBuildTests(unittest.TestCase):
             self.assertTrue(entry.is_file())
             self.assertIn("lowered", entry.parts)
             self.assertNotIn("--hidden-import=quantar._nuitka_manifest", called_command)
-            self.assertNotIn(f"--paths={to_bin._REPO_SRC}", called_command)
+            self.assertIn(f"--paths={to_bin._REPO_SRC}", called_command)
             env_path = run.call_args.kwargs["env"]["PYTHONPATH"]
             self.assertTrue(env_path.startswith(str(entry.parent)))
 
@@ -289,10 +289,10 @@ class QtrCompileTests(unittest.TestCase):
         self.assertIn("backend.set_backend('rust')", lowered)
         self.assertIn("use_rust_physics(True)", lowered)
 
-    def test_pure_lowered_py_skips_runtime_helpers(self) -> None:
+    def test_pure_lowered_py_gets_only_import_hook(self) -> None:
         source = "x = 1\nprint(x)\n"
         lowered = runner.unparse(runner._inject_runtime_imports(ast.parse(source), source_code=source, source_path=Path("main.qtr")))
-        self.assertNotIn("lang_systems", lowered)
+        self.assertIn("from lang_systems.imports import install_import_hook", lowered)
         self.assertNotIn("__quantar_apply__", lowered)
 
     def test_lowered_quantar_operator_keeps_runtime_helper(self) -> None:

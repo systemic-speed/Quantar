@@ -12,12 +12,13 @@ import traceback
 import typer
 
 from . import ast_builder
-from .checker import QuantarCheckError, check_project
+from .checker import QuantarCheckError, check_project, register_operators_for_project
 from .config import QuantarConfig, find_config
-from .imports import find_qtr_module, install_import_hook, iter_import_statements, preload_imports, resolve_import_name
+from .imports import install_import_hook, preload_imports
+from .operators import register_declared_operators
 from .project import init_project, new_project
 from .runtime import runtime_globals
-from .to_bin import RUST_PRELUDE, make_bin_for_file
+from .to_bin import RUST_PRELUDE, make_bin_for_file, rust_extension_status
 
 INTERNAL_RUNNER_FILE = Path(__file__).resolve()
 INTERNAL_PACKAGE_DIR = INTERNAL_RUNNER_FILE.parent.parent.resolve()
@@ -33,6 +34,7 @@ _DEFAULT_PY_DIR = "./quantar_compile/py"
 _COMMAND_NAMES = frozenset({"run", "r", "compile", "c", "comp", "check", "new", "init", "lower"})
 _GLOBAL_OPTIONS = frozenset({"-h", "--help", "--install-completion", "--show-completion"})
 _RESERVED_ARGV = _COMMAND_NAMES | _GLOBAL_OPTIONS
+_VALUE_OPTIONS = frozenset({"--compile-to", "-c", "--mode", "--jobs", "--output"})
 
 _APPLY_IMPORT = "from lang_systems.runtime import apply_quantar_operator as __quantar_apply__"
 _IMPORT_HOOK_IMPORT = "from lang_systems.imports import install_import_hook as __quantar_install_import_hook__"
@@ -82,10 +84,9 @@ def _package_for(path: Path) -> str:
     if not is_package:
         return ""
     for entry in (*sys.path, str(INTERNAL_PACKAGE_DIR)):
-        if not entry:
-            continue
+        base = Path.cwd() if not entry else Path(entry).resolve()
         try:
-            parts = directory.relative_to(Path(entry).resolve()).parts
+            parts = directory.relative_to(base.resolve()).parts
         except ValueError:
             continue
         return ".".join(parts)
@@ -109,27 +110,6 @@ def _uses_quantar_apply(tree: ast.AST) -> bool:
     """Return whether lowering produced a ``__quantar_apply__`` call."""
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "__quantar_apply__":
-            return True
-    return False
-
-
-def _needs_import_hook(source_code: str, path: Path, package: str) -> bool:
-    """Return whether any imported name resolves to a local ``.qtr`` file."""
-    root = path.parent
-    if package:
-        for _ in package.split("."):
-            root = root.parent
-
-    for statement in iter_import_statements(source_code):
-        if isinstance(statement, ast.Import):
-            names = [alias.name for alias in statement.names]
-        else:
-            base = resolve_import_name(statement, package or None)
-            names = [base] if base else []
-            for alias in statement.names:
-                if alias.name != "*":
-                    names.append(f"{base}.{alias.name}")
-        if any(find_qtr_module(name, [root]) is not None for name in names):
             return True
     return False
 
@@ -158,8 +138,10 @@ def _inject_runtime_imports(tree: ast.AST, rust: bool = False, source_code: Opti
     helper_lines: list[str] = []
     if source_code is None or _uses_quantar_apply(lowered):
         helper_lines.append(_APPLY_IMPORT)
-    if source_code is None or source_path is None or _needs_import_hook(source_code, Path(source_path), package or ""):
-        helper_lines.extend((_IMPORT_HOOK_IMPORT, _IMPORT_HOOK_CALL))
+    # Lowered files may be moved or imported from a different root, and their
+    # local dependencies can import further `.qtr` modules. Installing the hook
+    # unconditionally is cheap and avoids missing transitive imports.
+    helper_lines.extend((_IMPORT_HOOK_IMPORT, _IMPORT_HOOK_CALL))
     if rust:
         helper_lines.append(RUST_PRELUDE.rstrip())
     if not helper_lines:
@@ -227,13 +209,22 @@ def _enable_rust_physics() -> None:
     use_rust_physics(True)
 
 
+def _require_rust_extension() -> None:
+    """Validate the Rust extension without changing the live backend."""
+    available, detail = rust_extension_status(prepare=True)
+    if not available:
+        raise RuntimeError(f"--rust requires the Rust extension, but it could not be loaded: {detail}")
+
+
 def _enable_rust_backend() -> None:
     """Load/build the Rust extension, select it, and enable Rust physics."""
     from quantum import backend
 
-    os.environ["QUANTAR_BACKEND"] = "rust"
     backend.set_backend("rust")
     _enable_rust_physics()
+    # Only advertise Rust after every selection step succeeded; otherwise a
+    # later reset would read a stale environment variable and break NumPy.
+    os.environ["QUANTAR_BACKEND"] = "rust"
 
 
 def qtr_runner(filename: Source, output_path: OptionalSource = None, *, rust: bool = False) -> Path:
@@ -242,8 +233,13 @@ def qtr_runner(filename: Source, output_path: OptionalSource = None, *, rust: bo
     _validate_source(path)
 
     if rust:
-        # Must happen before preload_imports() imports ``quantum``.
-        _enable_rust_backend()
+        if output_path is not None:
+            # Lowering only emits a file; validate the extension now and let
+            # RUST_PRELUDE select it when the generated program is executed.
+            _require_rust_extension()
+        else:
+            # Must happen before preload_imports() imports ``quantum``.
+            _enable_rust_backend()
 
     install_import_hook()
     package = _package_for(path)
@@ -252,7 +248,16 @@ def qtr_runner(filename: Source, output_path: OptionalSource = None, *, rust: bo
     source_code = path.read_text(encoding="utf-8")
     source_name = str(path)
     _cache_source(source_name, source_code)
-    preload_imports(source_code, source_name, package)
+    # Operators declared in the entry file must be known before parsing, even
+    # when the file is being executed rather than lowered.
+    register_declared_operators(source_code)
+    if output_path is not None:
+        # Lowering must not execute local modules. Register operator names from
+        # source text instead; running those modules is only needed when the
+        # program itself is executed.
+        register_operators_for_project(path)
+    else:
+        preload_imports(source_code, source_name, package)
 
     tree = ast_builder.parse_ast(source_code, source_name)
     if output_path is not None:
@@ -334,8 +339,14 @@ def _compile_destination(output_path: OptionalSource, filename: Source, config: 
     """Resolve where a compile command should write its output."""
     if output_path is not None and str(output_path).strip():
         return output_path
+
     if config is not None and config.output_path is not None:
-        return config.output_path
+        candidate = config.output_path
+        if target in _PYTHON_TARGETS and candidate.suffix.lower() == ".py":
+            return candidate
+        if target in _BINARY_TARGETS and candidate.suffix.lower() != ".py":
+            return candidate
+
     if target in _PYTHON_TARGETS:
         return Path(filename).with_suffix(".py")
     return _DEFAULT_BINARY_DIR
@@ -358,11 +369,14 @@ def cmd_compile(filename: str | None = _FILENAME, output_path: str | None = _OUT
     target, selected_mode = _compile_settings(compile_to, mode, config)
     destination = _compile_destination(output_path, source, config, target)
     use_rust = _rust_value(rust, config)
+    selected_jobs = _jobs_value(jobs, config)
+    if selected_jobs < 1:
+        raise typer.BadParameter("jobs must be at least 1")
 
     if target in _PYTHON_TARGETS:
         qtr_runner(source, destination, rust=use_rust)
         return
-    artifact = qtr_compile(source, destination, mode=selected_mode, jobs=_jobs_value(jobs, config), rust=use_rust) #type: ignore[arg-type]
+    artifact = qtr_compile(source, destination, mode=selected_mode, jobs=selected_jobs, rust=use_rust) #type: ignore[arg-type]
     print(f"[BINARY] Compiled to {artifact}")
 
 
@@ -425,19 +439,51 @@ app.command("comp", hidden=True)(cmd_compile)
 
 
 def _normalize_argv(argv: Sequence[str]) -> list[str]:
-    """Treat a bare filename as shorthand for ``qtr run``."""
-    if argv and argv[0] not in _RESERVED_ARGV and not argv[0].startswith("-"):
-        return ["run", *argv]
-    return list(argv)
+    """Treat a bare filename as shorthand for ``qtr run``.
+
+    Options may come before the filename (``qtr --rust main.qtr``); the command
+    is inserted at the front so Typer sees a valid command line.
+    """
+    args = list(argv)
+    if not args or args[0] in _RESERVED_ARGV:
+        return args
+    if any(
+        not token.startswith("-") and Path(token).suffix.lower() in _SOURCE_SUFFIXES
+        for token in args
+    ):
+        return ["run", *args]
+    return args
 
 
 def _source_filename(args: Sequence[str]) -> str:
-    """Return the source filename named in an argument list."""
-    if not args:
-        return ""
-    if args[0] in _COMMAND_NAMES:
-        return args[1] if len(args) > 1 else ""
-    return args[0]
+    """Return the source filename (or closest argument) named in ``args``."""
+    candidates = args[1:] if args and args[0] in _COMMAND_NAMES else args
+    skip_value = False
+    for token in candidates:
+        if skip_value:
+            skip_value = False
+            continue
+        if token in _VALUE_OPTIONS:
+            skip_value = True
+            continue
+        if token.startswith("-"):
+            continue
+        return token
+    return ""
+
+
+def _is_internal_frame(tb) -> bool:
+    """Return whether a traceback frame belongs to Quantar or CLI plumbing."""
+    raw_filename = tb.tb_frame.f_code.co_filename
+    if raw_filename.startswith("<") and raw_filename.endswith(">"):
+        return True
+    frame_path = Path(raw_filename).resolve()
+    return (
+        frame_path == INTERNAL_RUNNER_FILE
+        or INTERNAL_PACKAGE_DIR in frame_path.parents
+        or "site-packages" in frame_path.parts
+        or "dist-packages" in frame_path.parts
+    )
 
 
 def _first_user_traceback(error: BaseException, full_traceback: bool):
@@ -445,17 +491,10 @@ def _first_user_traceback(error: BaseException, full_traceback: bool):
     selected_tb = error.__traceback__
     if full_traceback or selected_tb is None:
         return selected_tb
-
     current = selected_tb
-    while current is not None:
-        raw_filename = current.tb_frame.f_code.co_filename
-        is_virtual = raw_filename.startswith("<") and raw_filename.endswith(">")
-        frame_path = Path(raw_filename).resolve()
-        is_internal = frame_path == INTERNAL_RUNNER_FILE or INTERNAL_PACKAGE_DIR in frame_path.parents
-        if is_virtual or not is_internal:
-            return current
+    while current is not None and _is_internal_frame(current):
         current = current.tb_next
-    return selected_tb
+    return current
 
 
 def _exception_text(error: BaseException, full_traceback: bool) -> list[str]:
@@ -473,21 +512,43 @@ def _show_cli_error(error: BaseException) -> None:
     sys.exit(getattr(error, "exit_code", 1))
 
 
+def _write_exception(error: BaseException) -> None:
+    """Print an error with internal frames hidden unless requested."""
+    for line in _exception_text(error, _FULL_TRACEBACK):
+        sys.stderr.write(line)
+
+
+def _terminated_message(args: Sequence[str]) -> str:
+    """Return the Ctrl+C message for the current command line."""
+    return f"[PROCESS TERMINATED] Process from {_source_filename(args)} has been terminated"
+
+
 def main() -> None:
     """Console-script entry point for ``qtr``."""
     args = _normalize_argv(sys.argv[1:])
     try:
         app(args=args, standalone_mode=False)
     except KeyboardInterrupt:
-        print(f"[PROCESS TERMINATED] Process from {_source_filename(args)} has been terminated")
-    except typer.Exit:
+        print(_terminated_message(args))
+        raise SystemExit(130) from None
+    except typer.Exit as error:
+        code = int(getattr(error, "exit_code", 0) or 0)
+        if code == 130:
+            print(_terminated_message(args))
+        if code:
+            raise SystemExit(code) from None
         return
     except typer.TyperException as error:
         _show_cli_error(error)
+    except (FileNotFoundError, ValueError, OSError, RuntimeError) as error:
+        if _first_user_traceback(error, False) is None:
+            sys.stderr.write(f"[ERROR] {error}\n")
+            raise SystemExit(1) from None
+        _write_exception(error)
+        raise SystemExit(1) from None
     except Exception as error:
-        for line in _exception_text(error, _FULL_TRACEBACK):
-            sys.stderr.write(line)
-        sys.exit(1)
+        _write_exception(error)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
